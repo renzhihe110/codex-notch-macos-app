@@ -1,93 +1,87 @@
-# codex-notch-macos-app
+# Codex Notch macOS App
 
+这是一个独立的 macOS SwiftPM MVP，用来在屏幕顶部展示 Codex 桌面刘海屏体验。它只读读取本机 Codex 状态，收起时展示当前会话状态、标题和完成进度，存在运行中或等待处理的会话时会轮播提示；展开后展示最近会话列表，点击会话可尝试通过 Codex 深链回到对应工作上下文。
 
+## 项目目标
 
-## Getting started
+- 提供一个不修改 Codex App 的独立顶部刘海屏入口。
+- 用红、黄、绿三种状态表达最近会话的健康度和活跃度。
+- 收起态优先轮播黄灯会话，没有黄灯时展示最近一条会话，并显示已完成/总会话数。
+- 展开后展示最多 8 条最近会话，包括标题、工作目录提示、最近活动时间和注意力状态。
+- 点击会话后优先打开 `codex://threads/<thread-id>` 深链，并通过可见 Terminal 执行 `codex resume <threadID>` 作为兜底。
+- 支持可配置快捷键展开面板，默认 `Cmd+F1`，展开后用上下键切换会话，回车进入选中对话，`Esc` 收起面板。
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## 运行方式
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+在 `codex-notch-macos-app/` 目录下可以执行 `swift run CodexNotch` 启动应用，也可以用 Xcode 打开 `Package.swift` 后运行 `CodexNotch` target。验收以本机手动打开应用和观察行为为主。
 
-## Add your files
+## 编译方式
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+在 `codex-notch-macos-app/` 目录下可以执行 `./scripts/build.sh` 编译 debug 版本，也可以执行 `./scripts/build.sh release` 编译 release 版本。脚本只执行 SwiftPM 编译，不启动应用、不运行测试。
 
-```
-cd existing_repo
-git remote add origin https://git.meitu.com/rzh1/codex-notch-macos-app.git
-git branch -M main
-git push -uf origin main
-```
+## 打包成 App
 
-## Integrate with your tools
+在 `codex-notch-macos-app/` 目录下执行 `./scripts/package_app.sh` 可以生成 release 版 `dist/Codex Notch.app`，执行 `./scripts/package_app.sh debug` 可以生成 debug 版。该 app bundle 默认使用 `local.codex.notch` 作为 bundle identifier，也可以通过 `BUNDLE_IDENTIFIER=... ./scripts/package_app.sh` 覆盖。产物是本地未签名 app，后续如果要分发还需要签名和 notarize。
 
-- [ ] [Set up project integrations](https://git.meitu.com/rzh1/codex-notch-macos-app/-/settings/integrations)
+## 界面行为
 
-## Collaborate with your team
+- 应用以 accessory 模式运行，不展示 Dock 图标或常驻菜单栏入口。
+- 刘海窗口固定在主屏顶部中间，收起高度会适配当前屏幕状态栏高度。
+- 默认每 3 秒刷新一次本机 Codex 状态。
+- 鼠标悬停刘海区域会展开面板，移出后短暂延迟再收起，窗口失焦也会收起。
+- 右键点击刘海屏可以打开设置或退出应用。
+- 状态灯使用红、黄、绿三色呼吸灯：红色表示失败信号，黄色表示运行中、等待、阻塞或可能停滞，绿色表示未发现异常或等待信号。
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## 数据源
 
-## Test and Deploy
+- `~/.codex/state_5.sqlite`：只读读取 thread 元信息，例如 id、标题、工作目录、归档状态和更新时间。
+- `~/.codex/sessions/**/*.jsonl`：只读读取尾部有限事件元数据，用于辅助判断最近活动、完成、失败或等待状态。
+- `~/.codex/session_index.jsonl`：作为 SQLite 信息不足或不可用时的只读兜底索引。
 
-Use the built-in continuous integration in GitLab.
+## 隐私边界
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+- 应用不写入 `~/.codex` 下任何文件。
+- jsonl 只读取尾部有限事件元数据，不展示用户正文、助手正文或完整对话内容。
+- 应用不修改、不注入、不 patch Codex App。
+- 应用不上传本地 Codex 数据，所有读取和展示都限定在本机。
+- 本地通知只使用会话标题、工作目录名、状态关键词和活动时间，不展示用户正文、助手正文或完整对话内容。
 
-***
+## 跳转行为
 
-# Editing this README
+- 点击指定会话时，应用会先校验 thread id 是否是 UUID 形态，再尝试打开 `codex://threads/<thread-id>`。
+- 深链打开后会短延迟激活已经运行的 Codex App，避免打开根入口覆盖目标 thread。
+- 如果深链无法打开，会先尝试通过 bundle id 或 `/Applications/Codex.app` 打开 Codex App，然后再次尝试深链。
+- 只有 Codex App 或深链路径不可用时，才通过 Terminal 可见执行 `codex resume <threadID>` 作为兜底。
+- Terminal 兜底会优先使用 Codex App 内置 CLI，然后尝试 `/opt/homebrew/bin/codex`、`/usr/local/bin/codex`，最后退回 `env codex`。
+- Terminal 成功启动只表示兜底命令已交给终端执行，不保证后续 Codex CLI 一定存在、认证有效或 resume 成功。
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## 快捷键和提醒
 
-## Suggestions for a good README
+- 默认 `Cmd+F1`：展开刘海面板并聚焦键盘选择，可在右键菜单的设置页中修改。
+- `↑` / `↓`：在展开面板中切换选中会话。
+- `Return`：进入当前选中会话。
+- `Esc`：收起展开面板。
+- 当会话出现等待输入、权限确认或运行事件超过约 10 分钟没有新活动时，应用会尝试发送本地通知。
+- 同一会话的同类提醒默认至少间隔约 10 分钟，避免重复打扰。
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+## 第一版限制
 
-## Name
-Choose a self-explaining name for your project.
+- 第一版只支持 macOS，不支持 Windows 或 Linux。
+- 第一版只展示红黄绿状态，不展示百分比进度。
+- 第一版依赖 Codex App 对 `codex://threads/<thread-id>` 的支持；如果本机 Codex App 版本不支持该深链，会退回 Terminal resume。
+- 第一版不写入会话状态，也不创建新的 Codex thread。
+- 第一版状态判断保持保守，只对等待输入、权限确认、明确阻塞或运行事件超过约 10 分钟没有新活动的会话做额外提醒。
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## 手动验收清单
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- 启动应用后，刘海屏出现在主屏顶部中间。
+- 收起态展示红黄绿状态点、当前标题和已完成/总会话数，保持在状态栏内。
+- 存在多个黄灯会话时，收起态会轮播显示运行中或等待处理的会话。
+- 鼠标悬停刘海屏后能展开最近会话列表，移出刘海或窗口失焦时可收起。
+- 右键点击刘海屏后，菜单里可以打开设置页或选择退出应用。
+- 会话列表不展示用户正文、助手正文或完整对话内容。
+- 默认 `Cmd+F1` 能展开面板，设置页修改快捷键后新快捷键能展开面板，上下键能切换高亮行，回车能进入选中会话，`Esc` 能收起面板。
+- 等待输入或可能停滞的会话会显示对应短文案，并在通知权限允许时触发本地通知。
+- 点击 UUID 形态的会话后，Codex App 会尝试打开对应 thread 深链并被激活。
+- 深链或 Codex App 不可用时，Terminal 中能看到 `codex resume <threadID>` 命令被执行。
+- 在 `~/.codex` 中没有新增或被修改的文件。
