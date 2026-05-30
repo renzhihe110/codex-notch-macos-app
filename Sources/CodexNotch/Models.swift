@@ -7,7 +7,7 @@ enum SessionStatus: String, Equatable {
     case green
 }
 
-// 表示黄灯会话里更需要用户注意的原因，供 UI 文案和本地通知复用。
+// 表示会话里更需要用户注意的原因，供 UI 文案和本地通知复用。
 enum SessionAttention: String, Equatable {
     case waitingInput
     case stalled

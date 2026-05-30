@@ -18,11 +18,12 @@ enum StatusMapper {
         return NotchState(sessions: mappedSessions, aggregateStatus: aggregateStatus(for: mappedSessions, errorMessage: errorMessage), lastUpdatedAt: latestActivity(in: mappedSessions, fallback: now), errorMessage: errorMessage)
     }
 
-    // 单会话状态按红色错误优先、黄色等待次之、其余绿色处理。
+    // 单会话状态按红色错误或等待输入、黄色运行、其余绿色处理。
     static func status(for session: CodexSession) -> SessionStatus {
         if session.status == .red { return .red }
         let signal = [session.lastEvent, session.errorHint].compactMap { $0 }.joined(separator: " ").lowercased()
         if containsAny(redSignals, in: signal) { return .red }
+        if containsAny(waitingAttentionSignals, in: signal) { return .red }
         if session.status == .yellow || containsAny(yellowSignals, in: signal) || containsActiveEvent(in: signal) { return .yellow }
         return .green
     }
@@ -30,8 +31,8 @@ enum StatusMapper {
     // 错误类信号优先映射为红色，避免被等待类状态覆盖。
     private static let redSignals = ["error", "failed", "failure", "last_error", "last error", "exception", "panic", "fatal", "crash"]
 
-    // 等待、暂停、超时、阻塞、权限类信号映射为黄色。
-    private static let yellowSignals = ["waiting", "wait", "paused", "pause", "timeout", "timed_out", "needs_input", "needs input", "blocked", "permission", "denied", "cancelled", "canceled", "interrupt", "approval", "task_started", "user_message", "reasoning"]
+    // 运行、暂停、超时、阻塞类信号映射为黄色，等待输入类信号单独映射为红色。
+    private static let yellowSignals = ["paused", "pause", "timeout", "timed_out", "blocked", "denied", "cancelled", "canceled", "interrupt", "task_started", "user_message", "reasoning"]
 
     // 需要主动提醒的等待信号，比普通黄灯更窄，避免把所有运行中事件都当成待处理。
     private static let waitingAttentionSignals = ["waiting", "wait", "needs_input", "needs input", "permission", "approval"]
@@ -50,9 +51,9 @@ enum StatusMapper {
 
     // 在红黄绿之外补一层注意力原因，只服务提醒和文案，不改变原始数据。
     private static func attention(for session: CodexSession, status: SessionStatus, now: Date) -> SessionAttention? {
-        guard status == .yellow else { return nil }
         let signal = [session.lastEvent, session.errorHint].compactMap { $0 }.joined(separator: " ").lowercased()
         if containsAny(waitingAttentionSignals, in: signal) { return .waitingInput }
+        guard status == .yellow else { return nil }
         if containsAny(stalledAttentionSignals, in: signal) { return .stalled }
         if containsActiveEvent(in: signal) && now.timeIntervalSince(session.updatedAt) >= stalledActiveInterval { return .stalled }
         return nil

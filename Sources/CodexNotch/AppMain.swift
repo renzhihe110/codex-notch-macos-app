@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
     private var notchWindowController: NotchWindowController?
+    private var statusBarItemController: StatusBarItemController?
     private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings)
     private var refreshTimer: Timer?
 
@@ -35,7 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         })
         notchWindowController = controller
-        controller.showWindow(nil)
+        statusBarItemController = StatusBarItemController(initialState: initialState) { [weak self] anchorFrame in
+            self?.notchWindowController?.revealFromStatusItem(anchorFrame: anchorFrame)
+        }
         refreshStatus()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.refreshStatus()
@@ -54,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snapshot = reader.loadSnapshot()
         let state = StatusMapper.map(snapshot: snapshot)
         notchWindowController?.update(state: state)
+        statusBarItemController?.update(state: state)
         alertNotifier.notifyIfNeeded(for: state.sessions)
     }
 

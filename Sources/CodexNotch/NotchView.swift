@@ -26,7 +26,9 @@ struct NotchView: View {
     @State private var collapsedCarouselIndex = 0
     // 列表高度贴合 320pt 展开窗口，避免底部出现大块空白。
     private let expandedListHeight: CGFloat = 254
-    // 收起态轮播正在运行的会话，避免多个任务时只看到最新一条。
+    // 展开态把分割线前的留白并入首行区域，确保首行内容按整行视觉中线居中。
+    private let expandedHeaderBottomInset: CGFloat = 8
+    // 收起态轮播红黄灯会话，避免多个任务时只看到最新一条。
     private let collapsedCarouselTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -81,7 +83,12 @@ struct NotchView: View {
                 collapsedHeader
             }
         }
-        .frame(height: model.collapsedHeight)
+        .frame(height: notchHeaderHeight)
+    }
+
+    // 收起态沿用状态栏高度，展开态首行包含下方留白以匹配分割线前的真实行高。
+    private var notchHeaderHeight: CGFloat {
+        model.isExpanded ? model.collapsedHeight + expandedHeaderBottomInset : model.collapsedHeight
     }
 
     // 收起态显示状态点、最新对话短句和完成进度，保持在状态栏高度内。
@@ -108,10 +115,10 @@ struct NotchView: View {
         .contentShape(Rectangle())
     }
 
-    // 收起态优先轮播运行中的会话，没有运行中时只展示最近一条会话。
+    // 收起态优先轮播红黄灯会话，没有红黄灯时只展示最近一条会话。
     private var collapsedCarouselSessions: [CodexSession] {
-        let runningSessions = model.state.sessions.filter { $0.status == .yellow }
-        return runningSessions.isEmpty ? Array(model.state.sessions.prefix(1)) : runningSessions
+        let activeSessions = model.state.sessions.filter { $0.status != .green }
+        return activeSessions.isEmpty ? Array(model.state.sessions.prefix(1)) : activeSessions
     }
 
     private var collapsedDisplaySession: CodexSession? {
@@ -149,19 +156,22 @@ struct NotchView: View {
 
     // 展开态优先展示最新 thread 和它的当前状态。
     private var expandedHeader: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             let currentSession = model.state.sessions.first
             StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 10)
             Text(collapsedTitle(for: currentSession))
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.90))
                 .lineLimit(1)
+                .frame(height: model.collapsedHeight, alignment: .center)
             Text(collapsedStatusText(for: currentSession))
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.68))
                 .lineLimit(1)
+                .frame(height: model.collapsedHeight, alignment: .center)
             Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .contentShape(Rectangle())
     }
 
@@ -170,7 +180,6 @@ struct NotchView: View {
         VStack(spacing: 6) {
             Divider()
                 .overlay(Color.white.opacity(0.12))
-                .padding(.top, 8)
             if let jumpError = model.jumpError {
                 Text(jumpError)
                     .font(.system(size: 11))
@@ -366,7 +375,7 @@ private struct NotchBackgroundShape: Shape {
 private struct StatusDot: View {
     let status: SessionStatus
     let size: CGFloat
-    @State private var isBreathing = false
+    @State private var isBlinking = false
 
     var body: some View {
         ZStack {
@@ -381,13 +390,14 @@ private struct StatusDot: View {
                 .shadow(color: haloColor.opacity(shadowOpacity), radius: shadowRadius)
         }
         .frame(width: haloSize + 2, height: haloSize + 2)
-        .task {
-            isBreathing = false
-            // 避开窗口展开/收起的约束更新窗口期，稳定后再启动呼吸灯。
+        .task(id: status) {
+            isBlinking = false
+            guard shouldBlink else { return }
+            // 避开窗口展开/收起的约束更新窗口期，稳定后再启动闪烁灯。
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
-                isBreathing = true
+            withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+                isBlinking = true
             }
         }
     }
@@ -407,6 +417,16 @@ private struct StatusDot: View {
         }
     }
 
+    // 只有红灯和黄灯闪烁，绿灯代表完成态并保持常亮。
+    private var shouldBlink: Bool {
+        switch status {
+        case .red, .yellow:
+            return true
+        case .green:
+            return false
+        }
+    }
+
     // 黄色单独使用偏柠檬的光晕色，避免呼吸边缘落到橙红观感。
     private var haloColor: Color {
         switch status {
@@ -417,58 +437,68 @@ private struct StatusDot: View {
         }
     }
 
-    // 黄色核心保持常亮，避免从暗态闪切到黄色。
+    // 红黄灯通过核心透明度完成闪烁，绿灯保持完成态常亮。
     private var coreOpacity: Double {
         switch status {
-        case .yellow:
+        case .red, .yellow:
+            return isBlinking ? 1.0 : 0.30
+        case .green:
             return 1.0
-        case .red, .green:
-            return isBreathing ? 1.0 : 0.68
         }
     }
 
     private var haloInnerOpacity: Double {
         switch status {
+        case .red:
+            return isBlinking ? 0.88 : 0.08
         case .yellow:
-            return isBreathing ? 0.72 : 0.22
-        case .red, .green:
-            return isBreathing ? 0.94 : 0.10
+            return isBlinking ? 0.72 : 0.10
+        case .green:
+            return 0.28
         }
     }
 
     private var haloMiddleOpacity: Double {
         switch status {
+        case .red:
+            return isBlinking ? 0.30 : 0.02
         case .yellow:
-            return isBreathing ? 0.26 : 0.08
-        case .red, .green:
-            return isBreathing ? 0.34 : 0.03
+            return isBlinking ? 0.26 : 0.04
+        case .green:
+            return 0.08
         }
     }
 
     private var haloOuterOpacity: Double {
         switch status {
+        case .red:
+            return isBlinking ? 0.08 : 0.0
         case .yellow:
-            return isBreathing ? 0.06 : 0.02
-        case .red, .green:
-            return isBreathing ? 0.10 : 0.0
+            return isBlinking ? 0.06 : 0.0
+        case .green:
+            return 0.02
         }
     }
 
     private var shadowOpacity: Double {
         switch status {
+        case .red:
+            return isBlinking ? 0.88 : 0.12
         case .yellow:
-            return isBreathing ? 0.54 : 0.24
-        case .red, .green:
-            return isBreathing ? 0.96 : 0.16
+            return isBlinking ? 0.54 : 0.14
+        case .green:
+            return 0.42
         }
     }
 
     private var shadowRadius: CGFloat {
         switch status {
+        case .red:
+            return isBlinking ? 9 : 1.5
         case .yellow:
-            return isBreathing ? 7 : 3
-        case .red, .green:
-            return isBreathing ? 9.5 : 1.5
+            return isBlinking ? 7 : 2
+        case .green:
+            return 4
         }
     }
 }

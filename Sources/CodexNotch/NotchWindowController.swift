@@ -20,6 +20,25 @@ enum NotchWindowMetrics {
         guard statusBarHeight > 0 else { return defaultCollapsedHeight }
         return min(defaultCollapsedHeight, statusBarHeight)
     }
+
+    // 保留收起态窗口兜底定位，正常入口已经由系统状态栏项承载。
+    static func origin(for size: CGSize, on screen: NSScreen?) -> CGPoint {
+        guard let screen else { return .zero }
+        return CGPoint(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height)
+    }
+
+    // 展开面板从状态栏项下方弹出，横向夹在可见屏幕范围内。
+    static func panelOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?) -> CGPoint {
+        guard let screen else { return .zero }
+        let visibleFrame = screen.visibleFrame
+        let margin: CGFloat = 8
+        let proposedX = anchorFrame.map { $0.midX - size.width / 2 } ?? visibleFrame.maxX - size.width - margin
+        let minX = visibleFrame.minX + margin
+        let maxX = visibleFrame.maxX - size.width - margin
+        let proposedTopY = anchorFrame?.minY ?? visibleFrame.maxY
+        let y = max(visibleFrame.minY + margin, min(proposedTopY - size.height, visibleFrame.maxY - size.height))
+        return CGPoint(x: min(max(proposedX, minX), maxX), y: y)
+    }
 }
 
 // 无边框窗口默认不能成为 key，显式允许后失焦回调才能可靠收起。
@@ -104,11 +123,22 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 全局快捷键调用这个入口时，主动激活应用并展开面板，方便继续用方向键操作。
     func revealForKeyboard() {
+        reveal(anchorFrame: nil)
+    }
+
+    // 状态栏项点击后，从对应按钮下方展开面板。
+    func revealFromStatusItem(anchorFrame: CGRect?) {
+        reveal(anchorFrame: anchorFrame)
+    }
+
+    // 统一展开入口，确保状态栏点击和热键行为一致。
+    private func reveal(anchorFrame: CGRect?) {
         collapseWorkItem?.cancel()
         normalizeSelectedSessionIndex()
         NSApp.activate(ignoringOtherApps: true)
+        positionWindow(isExpanded: true, anchorFrame: anchorFrame)
+        viewModel.isExpanded = true
         window?.makeKeyAndOrderFront(nil)
-        setExpanded(true)
     }
 
     private func handleHoverChanged(_ isHovered: Bool) {
@@ -140,11 +170,11 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             viewModel.isExpanded = true
         } else {
             viewModel.isExpanded = false
-            positionWindow(isExpanded: false)
+            window?.orderOut(nil)
         }
     }
 
-    private func positionWindow(isExpanded: Bool) {
+    private func positionWindow(isExpanded: Bool, anchorFrame: CGRect? = nil) {
         guard let window else { return }
         let screen = window.screen ?? NSScreen.main
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: screen)
@@ -152,9 +182,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         if viewModel.collapsedHeight != collapsedSize.height {
             viewModel.collapsedHeight = collapsedSize.height
         }
-        let screenFrame = screen?.frame ?? .zero
-        // 使用屏幕顶边作为固定锚点，展开时只向下增加高度，刘海始终贴在状态栏内。
-        let origin = CGPoint(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height)
+        // 展开时跟随系统状态栏项，收起兜底位置仅供内部尺寸计算使用。
+        let origin = isExpanded ? NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame) : NotchWindowMetrics.origin(for: size, on: screen)
         let frame = CGRect(origin: origin, size: size)
         window.setFrame(frame, display: true)
     }
