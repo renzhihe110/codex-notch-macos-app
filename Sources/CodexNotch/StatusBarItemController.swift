@@ -1,9 +1,10 @@
 import AppKit
 
-// 管理右上角状态栏区域里的胶囊浮窗，避免系统状态栏项被隐藏或排到不可见区域。
+// 管理刘海左侧胶囊浮窗，以及无安全浮窗位置时的系统状态栏兜底入口。
 final class StatusBarItemController: NSObject {
     private let window: NSWindow
     private let pillView: StatusPillView
+    private let statusItem: NSStatusItem
     private let onActivate: (CGRect?) -> Void
     private var state: NotchState
     private var blinkTimer: Timer?
@@ -17,17 +18,19 @@ final class StatusBarItemController: NSObject {
         self.onActivate = onActivate
         self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: pillSize))
         self.window = NSWindow(contentRect: CGRect(origin: .zero, size: pillSize), styleMask: [.borderless], backing: .buffered, defer: false)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: pillSize.width)
         super.init()
         configureWindow()
+        configureStatusItem()
         configurePillView()
         configureCarouselTimer()
         update(state: initialState)
-        window.orderFrontRegardless()
     }
 
     deinit {
         blinkTimer?.invalidate()
         carouselTimer?.invalidate()
+        NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     // 刷新胶囊展示，并根据当前颜色启停闪烁计时器。
@@ -48,6 +51,15 @@ final class StatusBarItemController: NSObject {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.contentView = pillView
         window.ignoresMouseEvents = false
+    }
+
+    // 无法安全使用刘海左侧空白区时，退回系统状态栏项，让 macOS 负责给胶囊预留宽度。
+    private func configureStatusItem() {
+        statusItem.isVisible = false
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(handleClick)
+        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.imageScaling = .scaleNone
     }
 
     // 点击胶囊时展开完整会话面板。
@@ -88,27 +100,51 @@ final class StatusBarItemController: NSObject {
         pillView.title = displayText
         pillView.isBlinkingOn = isBlinkingOn
         pillView.toolTip = tooltipText
+        updateStatusItemButton()
     }
 
     @objc private func handleClick() {
-        onActivate(window.frame)
+        onActivate(currentAnchorFrame)
     }
 
     // 优先贴在硬件刘海左侧的空白状态栏区域，避免遮住右侧系统图标。
     private func positionWindow() {
         guard let screen = NSScreen.main else { return }
-        let origin = statusPillOrigin(on: screen)
+        guard let origin = statusPillOrigin(on: screen) else {
+            window.orderOut(nil)
+            statusItem.isVisible = true
+            updateStatusItemButton()
+            return
+        }
+        statusItem.isVisible = false
         window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
         window.orderFrontRegardless()
     }
 
-    private func statusPillOrigin(on screen: NSScreen) -> CGPoint {
+    private func statusPillOrigin(on screen: NSScreen) -> CGPoint? {
         let y = screen.frame.maxY - pillSize.height - 2
         if let leftArea = screen.auxiliaryTopLeftArea, !leftArea.isEmpty, leftArea.width >= pillSize.width + 16 {
             return CGPoint(x: leftArea.maxX - pillSize.width - 10, y: y)
         }
-        let visibleFrame = screen.visibleFrame
-        return CGPoint(x: visibleFrame.maxX - pillSize.width - 180, y: y)
+        return nil
+    }
+
+    // 系统状态栏项需要位图形式的胶囊，保持和浮窗绘制一致。
+    private func updateStatusItemButton() {
+        guard statusItem.isVisible, let button = statusItem.button else { return }
+        button.target = self
+        button.action = #selector(handleClick)
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        button.image = pillView.renderedImage()
+        button.toolTip = tooltipText
+    }
+
+    private var currentAnchorFrame: CGRect? {
+        if statusItem.isVisible, let button = statusItem.button, let buttonWindow = button.window {
+            return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        }
+        return window.frame
     }
 
     private var carouselSessions: [CodexSession] {
@@ -219,6 +255,16 @@ private final class StatusPillView: NSControl {
         // 手动按胶囊中线绘制文字，避免 AppKit 段落 rect 的默认基线看起来偏上。
         let drawPoint = NSPoint(x: textArea.midX - textSize.width / 2, y: pillRect.midY - textSize.height / 2)
         attributedTitle.draw(at: drawPoint)
+    }
+
+    // 给系统状态栏按钮复用同一套自绘胶囊样式，避免 fallback 入口视觉不一致。
+    func renderedImage() -> NSImage {
+        let image = NSImage(size: bounds.size)
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else { return image }
+        cacheDisplay(in: bounds, to: representation)
+        image.addRepresentation(representation)
+        image.isTemplate = false
+        return image
     }
 
     private var statusColor: NSColor {
