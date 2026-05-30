@@ -22,12 +22,9 @@ struct NotchView: View {
     let onSelectSession: (CodexSession) -> Void
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
-    let onHoverChanged: (Bool) -> Void
+    let onToggleMode: () -> Void
     @State private var collapsedCarouselIndex = 0
-    // 列表高度贴合 320pt 展开窗口，避免底部出现大块空白。
-    private let expandedListHeight: CGFloat = 254
-    // 展开态把分割线前的留白并入首行区域，确保首行内容按整行视觉中线居中。
-    private let expandedHeaderBottomInset: CGFloat = 8
+    // 展开态布局常量放在 NotchWindowMetrics，确保视图和窗口按同一尺寸模型收缩。
     // 收起态轮播红黄灯会话，避免多个任务时只看到最新一条。
     private let collapsedCarouselTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
@@ -38,9 +35,9 @@ struct NotchView: View {
                 expandedList
             }
         }
-        .padding(.horizontal, model.isExpanded ? 12 : 0)
-        .padding(.bottom, model.isExpanded ? 10 : 0)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, model.isExpanded ? NotchWindowMetrics.expandedHorizontalInset : 0)
+        .padding(.bottom, model.isExpanded ? NotchWindowMetrics.expandedBottomInset : 0)
+        .frame(width: viewSize.width, height: viewSize.height, alignment: .top)
         .clipped()
         .background(notchBackground.fill(Color.black.opacity(0.94)))
         .overlay(notchBackground.stroke(Color.white.opacity(model.isExpanded ? 0.10 : 0.04), lineWidth: 1))
@@ -48,7 +45,11 @@ struct NotchView: View {
         // 根视图使用矩形命中区域，保证悬停进入刘海边缘时也能触发展开。
         .contentShape(Rectangle())
         .contextMenu {
-            // 右键菜单提供无菜单栏场景下的设置和退出入口。
+            // 右键菜单提供模式切换、设置和退出入口。
+            Button("切换到胶囊模式") {
+                onToggleMode()
+            }
+            Divider()
             Button("设置...") {
                 onOpenSettings()
             }
@@ -56,10 +57,6 @@ struct NotchView: View {
             Button("退出 Codex Notch") {
                 onQuit()
             }
-        }
-        // SwiftUI 直接监听当前视图悬停，避免 AppKit tracking area 被托管视图命中测试影响。
-        .onHover { isHovered in
-            onHoverChanged(isHovered)
         }
         .onReceive(collapsedCarouselTimer) { _ in
             advanceCollapsedCarousel()
@@ -72,6 +69,11 @@ struct NotchView: View {
     // 展开态也保持方形顶部，避免面板离开状态栏刘海的视觉形态。
     private var notchBackground: NotchBackgroundShape {
         NotchBackgroundShape(topRadius: 0, bottomRadius: model.isExpanded ? 18 : 12)
+    }
+
+    // 根视图尺寸和 AppKit 窗口尺寸保持一致，避免 NSHostingView 用内容理想尺寸反向撑大窗口。
+    private var viewSize: CGSize {
+        model.isExpanded ? NotchWindowMetrics.expandedSize(for: model.state, collapsedHeight: model.collapsedHeight, hasJumpError: model.jumpError != nil) : CGSize(width: NotchWindowMetrics.collapsedWidth, height: model.collapsedHeight)
     }
 
     // 顶部区域在收起和展开时都显示当前 thread 摘要。
@@ -88,14 +90,19 @@ struct NotchView: View {
 
     // 收起态沿用状态栏高度，展开态首行包含下方留白以匹配分割线前的真实行高。
     private var notchHeaderHeight: CGFloat {
-        model.isExpanded ? model.collapsedHeight + expandedHeaderBottomInset : model.collapsedHeight
+        model.isExpanded ? NotchWindowMetrics.expandedHeaderHeight(collapsedHeight: model.collapsedHeight) : model.collapsedHeight
+    }
+
+    // 列表高度由窗口总高反推，内容不足时跟随收缩，内容过多时在内部滚动。
+    private var expandedListHeight: CGFloat {
+        NotchWindowMetrics.expandedScrollHeight(for: model.state, collapsedHeight: model.collapsedHeight, hasJumpError: model.jumpError != nil)
     }
 
     // 收起态显示状态点、最新对话短句和完成进度，保持在状态栏高度内。
     private var collapsedHeader: some View {
         HStack(alignment: .center, spacing: 7) {
             let currentSession = collapsedDisplaySession
-            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 10)
+            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 11)
             Text(collapsedTitle(for: currentSession))
                 .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.90))
@@ -158,7 +165,7 @@ struct NotchView: View {
     private var expandedHeader: some View {
         HStack(alignment: .center, spacing: 8) {
             let currentSession = model.state.sessions.first
-            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 10)
+            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 11)
             Text(collapsedTitle(for: currentSession))
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.90))
@@ -172,13 +179,15 @@ struct NotchView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, NotchWindowMetrics.expandedRowInnerInset)
         .contentShape(Rectangle())
     }
 
     // 展开态展示最近会话列表，点击行只抛出回调给后续路由任务。
     private var expandedList: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: NotchWindowMetrics.expandedListSpacing) {
             Divider()
+                .frame(height: NotchWindowMetrics.expandedDividerHeight)
                 .overlay(Color.white.opacity(0.12))
             if let jumpError = model.jumpError {
                 Text(jumpError)
@@ -195,7 +204,7 @@ struct NotchView: View {
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            // 固定列表区域高度，超过窗口可用空间时在内部滚动而不是撑破窗口。
+            // 列表区域随内容收缩，超过最大窗口高度时在内部滚动而不是撑破窗口。
             ScrollViewReader { proxy in
                 ScrollView {
                     if visibleSessions.isEmpty {
@@ -204,7 +213,7 @@ struct NotchView: View {
                             .foregroundStyle(.white.opacity(0.62))
                             .frame(maxWidth: .infinity, minHeight: 46)
                     } else {
-                        VStack(spacing: 6) {
+                        VStack(spacing: NotchWindowMetrics.expandedListSpacing) {
                             ForEach(Array(visibleSessions.enumerated()), id: \.element.id) { index, session in
                                 SessionRow(session: session, isSelected: index == model.selectedSessionIndex, onOpen: {
                                     onSelectSession(session)
@@ -212,6 +221,7 @@ struct NotchView: View {
                                 .id(session.id)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .top)
                     }
                 }
                 .scrollIndicators(.never)
@@ -225,12 +235,13 @@ struct NotchView: View {
                 }
             }
             .frame(height: expandedListHeight)
+            .frame(maxWidth: .infinity)
         }
     }
 
     // 展开态固定只展示前 8 条，键盘选择和滚动也限定在同一可见集合内。
     private var visibleSessions: [CodexSession] {
-        Array(model.state.sessions.prefix(8))
+        Array(model.state.sessions.prefix(NotchWindowMetrics.visibleSessionLimit))
     }
 
     // 键盘选择行变化时把目标行带回视野，避免选中项滚到不可见区域。
@@ -292,8 +303,9 @@ private struct SessionRow: View {
     let onOpen: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 8) {
             StatusDot(status: session.status, size: 9)
+                .frame(width: 11, alignment: .center)
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.displayTitle)
@@ -327,6 +339,7 @@ private struct SessionRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(height: session.latestMessage == nil ? 46 : 58)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.055)))
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(isSelected ? Color.white.opacity(0.16) : Color.clear, lineWidth: 1))
     }
@@ -371,39 +384,23 @@ private struct NotchBackgroundShape: Shape {
     }
 }
 
-// 统一状态灯颜色，供收起态和行视图复用。
+// 统一单层状态灯样式，红黄闪烁，绿灯常亮。
 private struct StatusDot: View {
     let status: SessionStatus
     let size: CGFloat
-    @State private var isBlinking = false
+    @State private var isBlinking = true
 
     var body: some View {
-        ZStack {
-            // 固定外圈尺寸，只动画渐变透明度和阴影，避免 transform 触发窗口约束重算。
-            Circle()
-                .fill(RadialGradient(colors: [haloColor.opacity(haloInnerOpacity), haloColor.opacity(haloMiddleOpacity), haloColor.opacity(haloOuterOpacity), haloColor.opacity(0.0)], center: .center, startRadius: 0, endRadius: haloSize / 2))
-                .frame(width: haloSize, height: haloSize)
-            Circle()
-                .fill(color.opacity(coreOpacity))
-                .frame(width: size, height: size)
-                .overlay(Circle().stroke(Color.white.opacity(0.26), lineWidth: 0.6))
-                .shadow(color: haloColor.opacity(shadowOpacity), radius: shadowRadius)
-        }
-        .frame(width: haloSize + 2, height: haloSize + 2)
-        .task(id: status) {
-            isBlinking = false
-            guard shouldBlink else { return }
-            // 避开窗口展开/收起的约束更新窗口期，稳定后再启动闪烁灯。
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+        Circle()
+            .fill(color.opacity(dotOpacity))
+            .frame(width: size, height: size)
+            .task(id: status) {
                 isBlinking = true
+                guard shouldBlink else { return }
+                withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+                    isBlinking = false
+                }
             }
-        }
-    }
-
-    private var haloSize: CGFloat {
-        size + 18
     }
 
     private var color: Color {
@@ -411,94 +408,17 @@ private struct StatusDot: View {
         case .red:
             return Color(red: 1.0, green: 0.25, blue: 0.22)
         case .yellow:
-            return Color(red: 0.90, green: 0.96, blue: 0.24)
+            return Color(red: 1.0, green: 0.72, blue: 0.0)
         case .green:
             return Color(red: 0.25, green: 0.86, blue: 0.42)
         }
     }
 
-    // 只有红灯和黄灯闪烁，绿灯代表完成态并保持常亮。
     private var shouldBlink: Bool {
-        switch status {
-        case .red, .yellow:
-            return true
-        case .green:
-            return false
-        }
+        status != .green
     }
 
-    // 黄色单独使用偏柠檬的光晕色，避免呼吸边缘落到橙红观感。
-    private var haloColor: Color {
-        switch status {
-        case .yellow:
-            return Color(red: 0.78, green: 1.0, blue: 0.12)
-        case .red, .green:
-            return color
-        }
-    }
-
-    // 红黄灯通过核心透明度完成闪烁，绿灯保持完成态常亮。
-    private var coreOpacity: Double {
-        switch status {
-        case .red, .yellow:
-            return isBlinking ? 1.0 : 0.30
-        case .green:
-            return 1.0
-        }
-    }
-
-    private var haloInnerOpacity: Double {
-        switch status {
-        case .red:
-            return isBlinking ? 0.88 : 0.08
-        case .yellow:
-            return isBlinking ? 0.72 : 0.10
-        case .green:
-            return 0.28
-        }
-    }
-
-    private var haloMiddleOpacity: Double {
-        switch status {
-        case .red:
-            return isBlinking ? 0.30 : 0.02
-        case .yellow:
-            return isBlinking ? 0.26 : 0.04
-        case .green:
-            return 0.08
-        }
-    }
-
-    private var haloOuterOpacity: Double {
-        switch status {
-        case .red:
-            return isBlinking ? 0.08 : 0.0
-        case .yellow:
-            return isBlinking ? 0.06 : 0.0
-        case .green:
-            return 0.02
-        }
-    }
-
-    private var shadowOpacity: Double {
-        switch status {
-        case .red:
-            return isBlinking ? 0.88 : 0.12
-        case .yellow:
-            return isBlinking ? 0.54 : 0.14
-        case .green:
-            return 0.42
-        }
-    }
-
-    private var shadowRadius: CGFloat {
-        switch status {
-        case .red:
-            return isBlinking ? 9 : 1.5
-        case .yellow:
-            return isBlinking ? 7 : 2
-        case .green:
-            return 4
-        }
+    private var dotOpacity: Double {
+        shouldBlink && !isBlinking ? 0.30 : 1.0
     }
 }

@@ -1,27 +1,42 @@
 import AppKit
 
-// 管理刘海左侧胶囊浮窗，以及无安全浮窗位置时的系统状态栏兜底入口。
+// 管理可拖动胶囊浮窗入口；它不使用 NSStatusItem，也不保存用户拖动位置。
 final class StatusBarItemController: NSObject {
     private let window: NSWindow
     private let pillView: StatusPillView
-    private let statusItem: NSStatusItem
     private let onActivate: (CGRect?) -> Void
+    private let onMove: (CGRect) -> Void
+    private let onMouseExit: () -> Void
+    private let onOpenSettings: () -> Void
+    private let onQuit: () -> Void
+    private let onToggleMode: () -> Void
     private var state: NotchState
     private var blinkTimer: Timer?
     private var carouselTimer: Timer?
     private var isBlinkingOn = true
     private var carouselIndex = 0
-    private let pillSize = CGSize(width: 112, height: 28)
+    private var isEntryVisible = false
+    private var hasPositionedForCurrentShow = false
+    private var dragStartMouseLocation: CGPoint?
+    private var dragStartWindowOrigin: CGPoint?
+    private var didDrag = false
+    private var hoverWorkItem: DispatchWorkItem?
+    private let dragThreshold: CGFloat = 3
+    private let hoverDelay: TimeInterval = 0.10
+    private let pillSize = CGSize(width: 82, height: 28)
 
-    init(initialState: NotchState, onActivate: @escaping (CGRect?) -> Void) {
+    init(initialState: NotchState, onActivate: @escaping (CGRect?) -> Void, onMove: @escaping (CGRect) -> Void, onMouseExit: @escaping () -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         self.state = initialState
         self.onActivate = onActivate
+        self.onMove = onMove
+        self.onMouseExit = onMouseExit
+        self.onOpenSettings = onOpenSettings
+        self.onQuit = onQuit
+        self.onToggleMode = onToggleMode
         self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: pillSize))
         self.window = NSWindow(contentRect: CGRect(origin: .zero, size: pillSize), styleMask: [.borderless], backing: .buffered, defer: false)
-        self.statusItem = NSStatusBar.system.statusItem(withLength: pillSize.width)
         super.init()
         configureWindow()
-        configureStatusItem()
         configurePillView()
         configureCarouselTimer()
         update(state: initialState)
@@ -30,45 +45,66 @@ final class StatusBarItemController: NSObject {
     deinit {
         blinkTimer?.invalidate()
         carouselTimer?.invalidate()
-        NSStatusBar.system.removeStatusItem(statusItem)
+        hoverWorkItem?.cancel()
     }
 
-    // 刷新胶囊展示，并根据当前颜色启停闪烁计时器。
+    // 刷新胶囊展示，并根据当前颜色启停闪烁计时器；刷新不会改动用户拖动后的位置。
     func update(state: NotchState) {
         self.state = state
         normalizeCarouselIndex()
         configureBlinkTimer()
         updatePillView()
-        positionWindow()
+        guard isEntryVisible else { return }
+        window.display()
+        window.orderFrontRegardless()
     }
 
-    // 胶囊浮窗保持无阴影透明背景，由内部 view 画出截图里的深色胶囊。
+    // 显示胶囊入口；进入胶囊模式时强制回到默认位置。
+    func showEntry(resetPosition: Bool = false) {
+        isEntryVisible = true
+        if resetPosition || !hasPositionedForCurrentShow {
+            positionWindowAtDefault()
+            hasPositionedForCurrentShow = true
+        }
+        updatePillView()
+        window.orderFrontRegardless()
+    }
+
+    // 隐藏胶囊入口，同时清理未完成的拖动状态。
+    func hideEntry() {
+        isEntryVisible = false
+        dragStartMouseLocation = nil
+        dragStartWindowOrigin = nil
+        didDrag = false
+        hoverWorkItem?.cancel()
+        pillView.isHighlighted = false
+        pillView.needsDisplay = true
+        window.orderOut(nil)
+    }
+
+    // 胶囊浮窗始终置顶显示，并允许鼠标事件进入自绘控件。
     private func configureWindow() {
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = false
-        window.level = .popUpMenu
+        window.hasShadow = true
+        window.level = .screenSaver
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.contentView = pillView
         window.ignoresMouseEvents = false
+        window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
     }
 
-    // 无法安全使用刘海左侧空白区时，退回系统状态栏项，让 macOS 负责给胶囊预留宽度。
-    private func configureStatusItem() {
-        statusItem.isVisible = false
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(handleClick)
-        statusItem.button?.imagePosition = .imageOnly
-        statusItem.button?.imageScaling = .scaleNone
-    }
-
-    // 点击胶囊时展开完整会话面板。
+    // 胶囊区分点击、拖动和右键菜单；只有普通点击才展开面板。
     private func configurePillView() {
-        pillView.target = self
-        pillView.action = #selector(handleClick)
+        pillView.onMouseDown = { [weak self] event in self?.beginDrag(with: event) }
+        pillView.onMouseDragged = { [weak self] event in self?.continueDrag(with: event) }
+        pillView.onMouseUp = { [weak self] event in self?.endDrag(with: event) }
+        pillView.onRightClick = { [weak self] event in self?.showContextMenu(with: event) }
+        pillView.onHoverChanged = { [weak self] isHovered in self?.handleHoverChanged(isHovered) }
     }
 
-    // 多个红黄灯会话时轮播 tooltip 目标，胶囊文字保持短小不挤占菜单栏。
+    // 多个红黄灯会话时轮播 tooltip 目标，胶囊文字保持短小不挤占视觉空间。
     private func configureCarouselTimer() {
         carouselTimer?.invalidate()
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -100,51 +136,103 @@ final class StatusBarItemController: NSObject {
         pillView.title = displayText
         pillView.isBlinkingOn = isBlinkingOn
         pillView.toolTip = tooltipText
-        updateStatusItemButton()
     }
 
-    @objc private func handleClick() {
-        onActivate(currentAnchorFrame)
-    }
-
-    // 优先贴在硬件刘海左侧的空白状态栏区域，避免遮住右侧系统图标。
-    private func positionWindow() {
+    // 默认位置放在主屏顶部可见区域，后续完全交给用户拖动。
+    private func positionWindowAtDefault() {
         guard let screen = NSScreen.main else { return }
-        guard let origin = statusPillOrigin(on: screen) else {
-            window.orderOut(nil)
-            statusItem.isVisible = true
-            updateStatusItemButton()
+        pillView.frame = CGRect(origin: .zero, size: pillSize)
+        let visibleFrame = screen.visibleFrame
+        let origin = CGPoint(x: visibleFrame.midX - pillSize.width / 2, y: visibleFrame.maxY - pillSize.height - 6)
+        window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
+    }
+
+    // 记录按下时的全局坐标和窗口原点，后续用全局坐标差值移动窗口。
+    private func beginDrag(with event: NSEvent) {
+        hoverWorkItem?.cancel()
+        dragStartMouseLocation = NSEvent.mouseLocation
+        dragStartWindowOrigin = window.frame.origin
+        didDrag = false
+        pillView.isHighlighted = true
+        pillView.needsDisplay = true
+    }
+
+    // 鼠标移动超过阈值后才判定为拖动，避免普通点击轻微抖动误触。
+    private func continueDrag(with event: NSEvent) {
+        guard let dragStartMouseLocation, let dragStartWindowOrigin else { return }
+        let currentLocation = NSEvent.mouseLocation
+        let delta = CGSize(width: currentLocation.x - dragStartMouseLocation.x, height: currentLocation.y - dragStartMouseLocation.y)
+        if !didDrag, hypot(delta.width, delta.height) > dragThreshold {
+            didDrag = true
+        }
+        guard didDrag else { return }
+        window.setFrameOrigin(CGPoint(x: dragStartWindowOrigin.x + delta.width, y: dragStartWindowOrigin.y + delta.height))
+        onMove(window.frame)
+    }
+
+    // 松手时根据拖动判定决定是展开面板还是只结束拖动。
+    private func endDrag(with event: NSEvent) {
+        let shouldActivate = !didDrag
+        dragStartMouseLocation = nil
+        dragStartWindowOrigin = nil
+        didDrag = false
+        pillView.isHighlighted = false
+        pillView.needsDisplay = true
+        guard shouldActivate else { return }
+        onActivate(window.frame)
+    }
+
+    // 胶囊右键菜单保留原有设置和退出，并新增切回刘海居中模式。
+    private func showContextMenu(with event: NSEvent) {
+        hoverWorkItem?.cancel()
+        pillView.isHighlighted = false
+        pillView.needsDisplay = true
+        NSMenu.popUpContextMenu(contextMenu, with: event, for: pillView)
+    }
+
+    // 胶囊悬停短暂停留后展开面板，避免扫过或准备拖动时误弹。
+    private func handleHoverChanged(_ isHovered: Bool) {
+        hoverWorkItem?.cancel()
+        guard isHovered else {
+            guard isEntryVisible, dragStartMouseLocation == nil else { return }
+            onMouseExit()
             return
         }
-        statusItem.isVisible = false
-        window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
-        window.orderFrontRegardless()
-    }
-
-    private func statusPillOrigin(on screen: NSScreen) -> CGPoint? {
-        let y = screen.frame.maxY - pillSize.height - 2
-        if let leftArea = screen.auxiliaryTopLeftArea, !leftArea.isEmpty, leftArea.width >= pillSize.width + 16 {
-            return CGPoint(x: leftArea.maxX - pillSize.width - 10, y: y)
+        guard isEntryVisible, dragStartMouseLocation == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.isEntryVisible, self.dragStartMouseLocation == nil else { return }
+            self.onActivate(self.window.frame)
         }
-        return nil
+        hoverWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + hoverDelay, execute: workItem)
     }
 
-    // 系统状态栏项需要位图形式的胶囊，保持和浮窗绘制一致。
-    private func updateStatusItemButton() {
-        guard statusItem.isVisible, let button = statusItem.button else { return }
-        button.target = self
-        button.action = #selector(handleClick)
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleNone
-        button.image = pillView.renderedImage()
-        button.toolTip = tooltipText
+    private lazy var contextMenu: NSMenu = {
+        let menu = NSMenu()
+        let switchItem = NSMenuItem(title: "切换到刘海居中模式", action: #selector(handleToggleMode), keyEquivalent: "")
+        switchItem.target = self
+        let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
+        settingsItem.target = self
+        let quitItem = NSMenuItem(title: "退出 Codex Notch", action: #selector(handleQuit), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(switchItem)
+        menu.addItem(.separator())
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
+        menu.addItem(quitItem)
+        return menu
+    }()
+
+    @objc private func handleToggleMode() {
+        onToggleMode()
     }
 
-    private var currentAnchorFrame: CGRect? {
-        if statusItem.isVisible, let button = statusItem.button, let buttonWindow = button.window {
-            return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        }
-        return window.frame
+    @objc private func handleOpenSettings() {
+        onOpenSettings()
+    }
+
+    @objc private func handleQuit() {
+        onQuit()
     }
 
     private var carouselSessions: [CodexSession] {
@@ -211,19 +299,55 @@ private final class StatusPillView: NSControl {
     var status: SessionStatus = .green { didSet { needsDisplay = true } }
     var title: String = "" { didSet { needsDisplay = true } }
     var isBlinkingOn = true { didSet { needsDisplay = true } }
+    var onMouseDown: ((NSEvent) -> Void)?
+    var onMouseDragged: ((NSEvent) -> Void)?
+    var onMouseUp: ((NSEvent) -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
+    var onHoverChanged: ((Bool) -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
 
-    // 点击胶囊时走 NSControl 的 target/action，保持和原状态栏入口行为一致。
-    override func mouseDown(with event: NSEvent) {
-        isHighlighted = true
-        needsDisplay = true
-        sendAction(action, to: target)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            self?.isHighlighted = false
-            self?.needsDisplay = true
+    // 胶囊浮窗使用 AppKit tracking area 感知悬停，不影响点击和拖动事件。
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
         }
+        let trackingArea = NSTrackingArea(rect: bounds, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self, userInfo: nil)
+        hoverTrackingArea = trackingArea
+        addTrackingArea(trackingArea)
+        super.updateTrackingAreas()
     }
 
-    // 胶囊绘制成截图里的深色圆角形态。
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+        super.mouseExited(with: event)
+    }
+
+    // 左键按下只记录状态，真正点击动作在 mouseUp 中按拖动阈值判断。
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?(event)
+    }
+
+    // 拖动过程交给控制器按全局坐标移动窗口。
+    override func mouseDragged(with event: NSEvent) {
+        onMouseDragged?(event)
+    }
+
+    // 松手后由控制器决定触发展开还是结束拖动。
+    override func mouseUp(with event: NSEvent) {
+        onMouseUp?(event)
+    }
+
+    // 右键只弹菜单，不触发拖动和展开。
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?(event)
+    }
+
+    // 胶囊绘制成深色圆角形态，宽度收窄后仍能显示状态点和短文案。
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let pillRect = bounds.insetBy(dx: 1.5, dy: 2)
@@ -240,31 +364,21 @@ private final class StatusPillView: NSControl {
 
     // 状态圆点只保留单层实心点，红黄状态按计时器闪烁。
     private func drawStatusDot(in pillRect: NSRect) {
-        let dotRect = NSRect(x: pillRect.minX + 10, y: pillRect.midY - 6.5, width: 13, height: 13)
+        let dotRect = NSRect(x: pillRect.minX + 9, y: pillRect.midY - 5.5, width: 11, height: 11)
         let dotAlpha = status == .green || isBlinkingOn ? 1.0 : 0.30
         statusColor.withAlphaComponent(dotAlpha).setFill()
         NSBezierPath(ovalIn: dotRect).fill()
     }
 
+    // 标题按胶囊中线绘制，避免 AppKit 默认基线造成上下偏移。
     private func drawTitle(in pillRect: NSRect) {
         let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.94)]
         let attributedTitle = NSAttributedString(string: title, attributes: attributes)
-        let textArea = NSRect(x: pillRect.minX + 30, y: pillRect.minY, width: pillRect.width - 39, height: pillRect.height)
+        let textArea = NSRect(x: pillRect.minX + 25, y: pillRect.minY, width: pillRect.width - 31, height: pillRect.height)
         let textSize = attributedTitle.size()
-        // 手动按胶囊中线绘制文字，避免 AppKit 段落 rect 的默认基线看起来偏上。
         let drawPoint = NSPoint(x: textArea.midX - textSize.width / 2, y: pillRect.midY - textSize.height / 2)
         attributedTitle.draw(at: drawPoint)
-    }
-
-    // 给系统状态栏按钮复用同一套自绘胶囊样式，避免 fallback 入口视觉不一致。
-    func renderedImage() -> NSImage {
-        let image = NSImage(size: bounds.size)
-        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else { return image }
-        cacheDisplay(in: bounds, to: representation)
-        image.addRepresentation(representation)
-        image.isTemplate = false
-        return image
     }
 
     private var statusColor: NSColor {
@@ -272,7 +386,7 @@ private final class StatusPillView: NSControl {
         case .red:
             return NSColor(red: 1.0, green: 0.25, blue: 0.22, alpha: 1.0)
         case .yellow:
-            return NSColor(red: 0.90, green: 0.96, blue: 0.24, alpha: 1.0)
+            return NSColor(red: 1.0, green: 0.72, blue: 0.0, alpha: 1.0)
         case .green:
             return NSColor(red: 0.25, green: 0.86, blue: 0.42, alpha: 1.0)
         }

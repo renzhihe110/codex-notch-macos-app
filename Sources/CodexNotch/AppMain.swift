@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarItemController: StatusBarItemController?
     private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings)
     private var refreshTimer: Timer?
+    private var displayMode: EntryDisplayMode = .notchCentered
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -34,11 +35,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettings()
         }, onQuit: {
             NSApp.terminate(nil)
+        }, onToggleMode: { [weak self] in
+            self?.switchDisplayMode(to: .capsule)
         })
         notchWindowController = controller
-        statusBarItemController = StatusBarItemController(initialState: initialState) { [weak self] anchorFrame in
+        statusBarItemController = StatusBarItemController(initialState: initialState, onActivate: { [weak self] anchorFrame in
             self?.notchWindowController?.revealFromStatusItem(anchorFrame: anchorFrame)
-        }
+        }, onMove: { [weak self] anchorFrame in
+            self?.notchWindowController?.updateExternalEntryFrame(anchorFrame)
+        }, onMouseExit: { [weak self] in
+            self?.notchWindowController?.collapseExternalPanelIfNeeded()
+        }, onOpenSettings: { [weak self] in
+            self?.openSettings()
+        }, onQuit: {
+            NSApp.terminate(nil)
+        }, onToggleMode: { [weak self] in
+            self?.switchDisplayMode(to: .notchCentered)
+        })
+        applyDisplayMode()
         refreshStatus()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.refreshStatus()
@@ -61,6 +75,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alertNotifier.notifyIfNeeded(for: state.sessions)
     }
 
+    // 入口模式只影响桌面入口形态，不触碰会话状态、热键和通知刷新。
+    private func switchDisplayMode(to mode: EntryDisplayMode) {
+        guard displayMode != mode else { return }
+        displayMode = mode
+        applyDisplayMode()
+    }
+
+    // 两种入口互斥显示；胶囊每次切换进入都回到默认位置。
+    private func applyDisplayMode() {
+        switch displayMode {
+        case .notchCentered:
+            statusBarItemController?.hideEntry()
+            notchWindowController?.showCollapsed()
+        case .capsule:
+            notchWindowController?.hideEntry()
+            statusBarItemController?.showEntry(resetPosition: true)
+        }
+    }
+
     // 从右键菜单直接打开设置窗口，避免 accessory app 没有 Settings responder 时点击无反应。
     private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
@@ -81,6 +114,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+}
+
+// 运行期入口展示模式不持久化，启动始终回到刘海居中。
+private enum EntryDisplayMode {
+    case notchCentered
+    case capsule
 }
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
