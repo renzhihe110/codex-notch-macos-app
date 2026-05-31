@@ -4,6 +4,8 @@ import SwiftUI
 final class NotchViewModel: ObservableObject {
     @Published var state: NotchState
     @Published var isExpanded: Bool
+    // 展开来源决定面板顶角：胶囊入口用圆顶，刘海入口用平顶。
+    @Published var isPresentedFromCapsule: Bool
     @Published var jumpError: String?
     @Published var collapsedHeight: CGFloat
     @Published var selectedSessionIndex: Int
@@ -11,6 +13,7 @@ final class NotchViewModel: ObservableObject {
     init(state: NotchState, isExpanded: Bool = false, collapsedHeight: CGFloat = NotchWindowMetrics.defaultCollapsedHeight) {
         self.state = state
         self.isExpanded = isExpanded
+        self.isPresentedFromCapsule = false
         self.collapsedHeight = collapsedHeight
         self.selectedSessionIndex = 0
     }
@@ -66,9 +69,9 @@ struct NotchView: View {
         }
     }
 
-    // 展开态也保持方形顶部，避免面板离开状态栏刘海的视觉形态。
+    // 胶囊模式展开为完整圆角浮层；刘海模式继续方形顶部贴合菜单栏。
     private var notchBackground: NotchBackgroundShape {
-        NotchBackgroundShape(topRadius: 0, bottomRadius: model.isExpanded ? 18 : 12)
+        NotchBackgroundShape(topRadius: model.isExpanded && model.isPresentedFromCapsule ? 18 : 0, bottomRadius: model.isExpanded ? 18 : 12)
     }
 
     // 根视图尺寸和 AppKit 窗口尺寸保持一致，避免 NSHostingView 用内容理想尺寸反向撑大窗口。

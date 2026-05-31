@@ -8,7 +8,7 @@ struct CodexNotchApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(settings: HotKeySettings.shared)
+            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared)
         }
     }
 }
@@ -19,9 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let jumpRouter = JumpRouter()
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
+    private let capsuleSettings = CapsuleSettings.shared
     private var notchWindowController: NotchWindowController?
     private var statusBarItemController: StatusBarItemController?
-    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings)
+    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings)
     private var refreshTimer: Timer?
     private var displayMode: EntryDisplayMode = .notchCentered
 
@@ -39,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.switchDisplayMode(to: .capsule)
         })
         notchWindowController = controller
-        statusBarItemController = StatusBarItemController(initialState: initialState, onActivate: { [weak self] anchorFrame in
+        statusBarItemController = StatusBarItemController(initialState: initialState, capsuleSettings: capsuleSettings, onActivate: { [weak self] anchorFrame in
             self?.notchWindowController?.revealFromStatusItem(anchorFrame: anchorFrame)
         }, onMove: { [weak self] anchorFrame in
             self?.notchWindowController?.updateExternalEntryFrame(anchorFrame)
@@ -124,12 +125,12 @@ private enum EntryDisplayMode {
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
 private final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(settings: HotKeySettings) {
-        let contentSize = CGSize(width: 420, height: 150)
+    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings) {
+        let contentSize = CGSize(width: 420, height: 215)
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Notch 设置"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView(settings: settings))
+        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings))
         super.init(window: window)
         window.delegate = self
     }

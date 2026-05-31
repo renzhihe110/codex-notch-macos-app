@@ -14,6 +14,8 @@ enum NotchWindowMetrics {
     static let expandedBottomInset: CGFloat = 8
     static let expandedListSpacing: CGFloat = 6
     static let expandedDividerHeight: CGFloat = 1
+    // 胶囊入口和面板留出轻微间距，避免视觉上贴成硬连接。
+    static let externalEntryPanelGap: CGFloat = 6
     static let expandedHeaderBottomInset: CGFloat = 8
     static let expandedErrorHeight: CGFloat = 30
     static let expandedEmptyListHeight: CGFloat = 46
@@ -76,8 +78,8 @@ enum NotchWindowMetrics {
         return CGPoint(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height)
     }
 
-    // 展开面板从状态栏项下方弹出，横向夹在可见屏幕范围内。
-    static func panelOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?, includeAnchorArea: Bool = false) -> CGPoint {
+    // 展开面板从入口下方弹出，横向夹在可见屏幕范围内。
+    static func panelOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?, includeAnchorArea: Bool = false, anchorGap: CGFloat = 0) -> CGPoint {
         guard let screen else { return .zero }
         let visibleFrame = screen.visibleFrame
         let margin: CGFloat = 8
@@ -86,7 +88,7 @@ enum NotchWindowMetrics {
         let maxX = visibleFrame.maxX - size.width - margin
         let proposedTopY = includeAnchorArea ? (anchorFrame?.maxY ?? visibleFrame.maxY) : (anchorFrame?.minY ?? visibleFrame.maxY)
         let topLimit = includeAnchorArea ? screen.frame.maxY : visibleFrame.maxY
-        let y = max(visibleFrame.minY + margin, min(proposedTopY - size.height, topLimit - size.height))
+        let y = max(visibleFrame.minY + margin, min(proposedTopY - size.height - anchorGap, topLimit - size.height))
         return CGPoint(x: min(max(proposedX, minX), maxX), y: y)
     }
 }
@@ -260,6 +262,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         activeEntryAnchorFrame = nil
         suppressEntryHoverUntilExit = false
         stopExpandedMouseTracking()
+        viewModel.isPresentedFromCapsule = false
         viewModel.isExpanded = false
         positionWindow(isExpanded: false)
         window?.orderFrontRegardless()
@@ -346,6 +349,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         activeEntryAnchorFrame = anchorFrame
         normalizeSelectedSessionIndex()
         NSApp.activate(ignoringOtherApps: true)
+        viewModel.isPresentedFromCapsule = !keepsCollapsedEntryVisible
         positionWindow(isExpanded: true, anchorFrame: anchorFrame)
         viewModel.isExpanded = true
         window?.makeKeyAndOrderFront(nil)
@@ -394,6 +398,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             tracksExpandedMouseExit = tracksMouseExit
             let anchorFrame = keepsCollapsedEntryVisible ? window?.frame : activeEntryAnchorFrame
             activeEntryAnchorFrame = anchorFrame
+            viewModel.isPresentedFromCapsule = !keepsCollapsedEntryVisible
             positionWindow(isExpanded: true, anchorFrame: anchorFrame)
             viewModel.isExpanded = true
             updateExpandedMouseTracking()
@@ -455,7 +460,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         }
         let size = isExpanded ? NotchWindowMetrics.expandedSize(for: viewModel.state, collapsedHeight: collapsedSize.height, hasJumpError: viewModel.jumpError != nil) : collapsedSize
         // 展开时跟随当前入口，收起时固定回到状态栏顶部居中。
-        let origin = isExpanded ? NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame, includeAnchorArea: keepsCollapsedEntryVisible) : NotchWindowMetrics.origin(for: size, on: screen)
+        let anchorGap = isExpanded && !keepsCollapsedEntryVisible ? NotchWindowMetrics.externalEntryPanelGap : 0
+        let origin = isExpanded ? NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame, includeAnchorArea: keepsCollapsedEntryVisible, anchorGap: anchorGap) : NotchWindowMetrics.origin(for: size, on: screen)
         let frame = CGRect(origin: origin, size: size)
         guard window.frame != frame else { return }
         window.setFrame(frame, display: true)

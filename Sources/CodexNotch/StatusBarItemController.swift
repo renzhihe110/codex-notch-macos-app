@@ -10,9 +10,11 @@ final class StatusBarItemController: NSObject {
     private let onOpenSettings: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
+    private let capsuleSettings: CapsuleSettings
     private var state: NotchState
     private var blinkTimer: Timer?
     private var carouselTimer: Timer?
+    private var capsuleSettingsObserver: NSObjectProtocol?
     private var isBlinkingOn = true
     private var carouselIndex = 0
     private var isEntryVisible = false
@@ -23,9 +25,10 @@ final class StatusBarItemController: NSObject {
     private var hoverWorkItem: DispatchWorkItem?
     private let dragThreshold: CGFloat = 3
     private let hoverDelay: TimeInterval = 0.10
-    private let pillSize = CGSize(width: 82, height: 28)
+    private var pillSize: CGSize
 
-    init(initialState: NotchState, onActivate: @escaping (CGRect?) -> Void, onMove: @escaping (CGRect) -> Void, onMouseExit: @escaping () -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
+    init(initialState: NotchState, capsuleSettings: CapsuleSettings, onActivate: @escaping (CGRect?) -> Void, onMove: @escaping (CGRect) -> Void, onMouseExit: @escaping () -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
+        let initialPillSize = capsuleSettings.size.dimensions
         self.state = initialState
         self.onActivate = onActivate
         self.onMove = onMove
@@ -33,11 +36,14 @@ final class StatusBarItemController: NSObject {
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
-        self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: pillSize))
-        self.window = NSWindow(contentRect: CGRect(origin: .zero, size: pillSize), styleMask: [.borderless], backing: .buffered, defer: false)
+        self.capsuleSettings = capsuleSettings
+        self.pillSize = initialPillSize
+        self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: initialPillSize))
+        self.window = NSWindow(contentRect: CGRect(origin: .zero, size: initialPillSize), styleMask: [.borderless], backing: .buffered, defer: false)
         super.init()
         configureWindow()
         configurePillView()
+        configureCapsuleSettingsObserver()
         configureCarouselTimer()
         update(state: initialState)
     }
@@ -46,6 +52,9 @@ final class StatusBarItemController: NSObject {
         blinkTimer?.invalidate()
         carouselTimer?.invalidate()
         hoverWorkItem?.cancel()
+        if let capsuleSettingsObserver {
+            NotificationCenter.default.removeObserver(capsuleSettingsObserver)
+        }
     }
 
     // 刷新胶囊展示，并根据当前颜色启停闪烁计时器；刷新不会改动用户拖动后的位置。
@@ -82,11 +91,11 @@ final class StatusBarItemController: NSObject {
         window.orderOut(nil)
     }
 
-    // 胶囊浮窗始终置顶显示，并允许鼠标事件进入自绘控件。
+    // 胶囊浮窗保持无阴影透明背景，避免系统窗口阴影让小尺寸圆角边缘发虚。
     private func configureWindow() {
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        window.hasShadow = false
         window.level = .screenSaver
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.contentView = pillView
@@ -102,6 +111,14 @@ final class StatusBarItemController: NSObject {
         pillView.onMouseUp = { [weak self] event in self?.endDrag(with: event) }
         pillView.onRightClick = { [weak self] event in self?.showContextMenu(with: event) }
         pillView.onHoverChanged = { [weak self] isHovered in self?.handleHoverChanged(isHovered) }
+    }
+
+    // 监听设置页尺寸变更，保持胶囊窗口和展开面板锚点同步更新。
+    private func configureCapsuleSettingsObserver() {
+        capsuleSettingsObserver = NotificationCenter.default.addObserver(forName: CapsuleSettings.changedNotification, object: capsuleSettings, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.applyCapsuleSize(self.capsuleSettings.size)
+        }
     }
 
     // 多个红黄灯会话时轮播 tooltip 目标，胶囊文字保持短小不挤占视觉空间。
@@ -136,6 +153,18 @@ final class StatusBarItemController: NSObject {
         pillView.title = displayText
         pillView.isBlinkingOn = isBlinkingOn
         pillView.toolTip = tooltipText
+    }
+
+    // 尺寸切换时围绕当前中心缩放，避免设置页操作让胶囊突然跳到别处。
+    private func applyCapsuleSize(_ size: CapsuleSize) {
+        let oldFrame = window.frame
+        pillSize = size.dimensions
+        pillView.frame = CGRect(origin: .zero, size: pillSize)
+        let origin = isEntryVisible ? CGPoint(x: oldFrame.midX - pillSize.width / 2, y: oldFrame.midY - pillSize.height / 2) : oldFrame.origin
+        window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
+        guard isEntryVisible else { return }
+        window.orderFrontRegardless()
+        onMove(window.frame)
     }
 
     // 默认位置放在主屏顶部可见区域，后续完全交给用户拖动。
