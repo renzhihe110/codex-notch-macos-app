@@ -57,7 +57,7 @@ final class StatusBarItemController: NSObject {
         }
     }
 
-    // 刷新胶囊展示，并根据当前颜色启停闪烁计时器；刷新不会改动用户拖动后的位置。
+    // 刷新胶囊展示，并按当前颜色启停闪烁计时器；刷新不会改动用户拖动后的位置。
     func update(state: NotchState) {
         self.state = state
         normalizeCarouselIndex()
@@ -131,7 +131,7 @@ final class StatusBarItemController: NSObject {
         }
     }
 
-    // 红灯和黄灯闪烁，绿灯保持常亮。
+    // 红黄灯保持轻量闪烁，绿灯常亮。
     private func configureBlinkTimer() {
         guard currentStatus != .green else {
             blinkTimer?.invalidate()
@@ -391,12 +391,58 @@ private final class StatusPillView: NSControl {
         drawTitle(in: pillRect)
     }
 
-    // 状态圆点只保留单层实心点，红黄状态按计时器闪烁。
+    // 状态圆点改为插画化交通灯：灯面更大，外圈保留深蓝壳体和白色描边。
     private func drawStatusDot(in pillRect: NSRect) {
-        let dotRect = NSRect(x: pillRect.minX + 9, y: pillRect.midY - 5.5, width: 11, height: 11)
-        let dotAlpha = status == .green || isBlinkingOn ? 1.0 : 0.30
-        statusColor.withAlphaComponent(dotAlpha).setFill()
-        NSBezierPath(ovalIn: dotRect).fill()
+        let dotSize = min(16, pillRect.height - 6)
+        let dotRect = NSRect(x: pillRect.minX + 7, y: pillRect.midY - dotSize / 2, width: dotSize, height: dotSize)
+        let dotAlpha: CGFloat = status == .green || isBlinkingOn ? 1.0 : 0.45
+        drawTrafficLens(in: dotRect, alpha: dotAlpha)
+    }
+
+    // AppKit 入口复刻 SwiftUI 插画状态灯的同款层次，避免胶囊模式和刘海模式割裂。
+    private func drawTrafficLens(in rect: NSRect, alpha: CGFloat) {
+        NSColor(red: 0.02, green: 0.06, blue: 0.11, alpha: 1.0).setFill()
+        NSBezierPath(ovalIn: rect).fill()
+        let rimRect = rect.insetBy(dx: rect.width * 0.05, dy: rect.height * 0.05)
+        NSColor(red: 0.10, green: 0.18, blue: 0.27, alpha: 1.0).setFill()
+        NSBezierPath(ovalIn: rimRect).fill()
+        let outlinePath = NSBezierPath(ovalIn: rimRect)
+        NSColor.white.withAlphaComponent(0.78).setStroke()
+        outlinePath.lineWidth = max(0.7, rect.width * 0.075)
+        outlinePath.stroke()
+        let ringRect = rect.insetBy(dx: rect.width * 0.10, dy: rect.height * 0.10)
+        let ringPath = NSBezierPath(ovalIn: ringRect)
+        NSColor(red: 0.01, green: 0.03, blue: 0.06, alpha: 0.95).setStroke()
+        ringPath.lineWidth = max(1.2, rect.width * 0.16)
+        ringPath.stroke()
+        let lensRect = rect.insetBy(dx: rect.width * 0.16, dy: rect.height * 0.16)
+        let lensPath = NSBezierPath(ovalIn: lensRect)
+        NSGraphicsContext.saveGraphicsState()
+        lensPath.addClip()
+        if let gradient = NSGradient(colors: [highlightStatusColor.withAlphaComponent(0.95 * alpha), statusColor.withAlphaComponent(alpha), darkStatusColor.withAlphaComponent(alpha)]) {
+            let center = NSPoint(x: lensRect.minX + lensRect.width * 0.40, y: lensRect.minY + lensRect.height * 0.66)
+            gradient.draw(fromCenter: center, radius: 0, toCenter: NSPoint(x: lensRect.midX, y: lensRect.midY), radius: lensRect.width * 0.62, options: [])
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.withAlphaComponent(0.22).setStroke()
+        lensPath.lineWidth = max(0.5, rect.width * 0.035)
+        lensPath.stroke()
+        drawLensTexture(in: lensRect, alpha: alpha)
+        let arcPath = NSBezierPath()
+        arcPath.appendArc(withCenter: NSPoint(x: lensRect.midX, y: lensRect.midY), radius: lensRect.width * 0.36, startAngle: 118, endAngle: 156)
+        NSColor.white.withAlphaComponent(0.76 * alpha).setStroke()
+        arcPath.lineWidth = max(1, rect.width * 0.09)
+        arcPath.stroke()
+    }
+
+    // 颗粒点阵模拟参考图灯罩上的数字化玻璃纹理，小尺寸下保持克制。
+    private func drawLensTexture(in lensRect: NSRect, alpha: CGFloat) {
+        let dotSize = max(1, lensRect.width * 0.065)
+        NSColor.white.withAlphaComponent(0.18 * alpha).setFill()
+        for offset in Self.lensTextureOffsets {
+            let center = NSPoint(x: lensRect.midX + offset.x * lensRect.width, y: lensRect.midY + offset.y * lensRect.height)
+            NSBezierPath(ovalIn: NSRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)).fill()
+        }
     }
 
     // 标题按胶囊中线绘制，避免 AppKit 默认基线造成上下偏移。
@@ -404,7 +450,7 @@ private final class StatusPillView: NSControl {
         let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.94)]
         let attributedTitle = NSAttributedString(string: title, attributes: attributes)
-        let textArea = NSRect(x: pillRect.minX + 25, y: pillRect.minY, width: pillRect.width - 31, height: pillRect.height)
+        let textArea = NSRect(x: pillRect.minX + 29, y: pillRect.minY, width: pillRect.width - 36, height: pillRect.height)
         let textSize = attributedTitle.size()
         let drawPoint = NSPoint(x: textArea.midX - textSize.width / 2, y: pillRect.midY - textSize.height / 2)
         attributedTitle.draw(at: drawPoint)
@@ -415,9 +461,46 @@ private final class StatusPillView: NSControl {
         case .red:
             return NSColor(red: 1.0, green: 0.25, blue: 0.22, alpha: 1.0)
         case .yellow:
-            return NSColor(red: 1.0, green: 0.72, blue: 0.0, alpha: 1.0)
+            return NSColor(red: 1.0, green: 0.92, blue: 0.10, alpha: 1.0)
         case .green:
             return NSColor(red: 0.25, green: 0.86, blue: 0.42, alpha: 1.0)
         }
     }
+
+    private var highlightStatusColor: NSColor {
+        switch status {
+        case .red:
+            return NSColor(red: 1.0, green: 0.45, blue: 0.42, alpha: 1.0)
+        case .yellow:
+            return NSColor(red: 1.0, green: 0.83, blue: 0.25, alpha: 1.0)
+        case .green:
+            return NSColor(red: 0.40, green: 0.95, blue: 0.58, alpha: 1.0)
+        }
+    }
+
+    private var darkStatusColor: NSColor {
+        switch status {
+        case .red:
+            return NSColor(red: 0.42, green: 0.01, blue: 0.0, alpha: 1.0)
+        case .yellow:
+            return NSColor(red: 0.64, green: 0.32, blue: 0.0, alpha: 1.0)
+        case .green:
+            return NSColor(red: 0.0, green: 0.34, blue: 0.12, alpha: 1.0)
+        }
+    }
+
+    private static let lensTextureOffsets: [CGPoint] = [
+        CGPoint(x: -0.18, y: 0.20),
+        CGPoint(x: 0.0, y: 0.22),
+        CGPoint(x: 0.18, y: 0.20),
+        CGPoint(x: -0.28, y: 0.04),
+        CGPoint(x: -0.10, y: 0.04),
+        CGPoint(x: 0.10, y: 0.04),
+        CGPoint(x: 0.28, y: 0.04),
+        CGPoint(x: -0.18, y: -0.12),
+        CGPoint(x: 0.0, y: -0.12),
+        CGPoint(x: 0.18, y: -0.12),
+        CGPoint(x: -0.08, y: -0.28),
+        CGPoint(x: 0.10, y: -0.28)
+    ]
 }

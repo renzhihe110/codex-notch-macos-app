@@ -180,6 +180,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private let onToggleMode: () -> Void
     private var collapseWorkItem: DispatchWorkItem?
     private var localKeyEventMonitor: Any?
+    private var localMouseEventMonitor: Any?
+    private var globalMouseEventMonitor: Any?
     private var hotKeySettingsObserver: NSObjectProtocol?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
@@ -191,7 +193,6 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var mouseLeftExpandedRegionAt: Date?
     private var tracksExpandedMouseExit = false
     private let collapseDelay: TimeInterval = 0.20
-    private let expandDelay: TimeInterval = 0.06
 
     init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
@@ -221,11 +222,18 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = hostingView
         positionWindow(isExpanded: false)
         installKeyboardHandling()
+        installOutsideClickHandling()
     }
 
     deinit {
         if let localKeyEventMonitor {
             NSEvent.removeMonitor(localKeyEventMonitor)
+        }
+        if let localMouseEventMonitor {
+            NSEvent.removeMonitor(localMouseEventMonitor)
+        }
+        if let globalMouseEventMonitor {
+            NSEvent.removeMonitor(globalMouseEventMonitor)
         }
         if let hotKeySettingsObserver {
             NotificationCenter.default.removeObserver(hotKeySettingsObserver)
@@ -297,8 +305,32 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    // 窗口失焦时收起，外部点击的完整全局监听留给后续任务。
+    // 窗口失焦时收起；外部点击由独立鼠标监听兜底。
     func windowDidResignKey(_ notification: Notification) {
+        collapseWorkItem?.cancel()
+        // 悬停展开时可能短暂失去 key，鼠标仍在面板或入口内时交给鼠标跟踪决定收起。
+        guard !isMouseInsideWindow() else { return }
+        setExpanded(false)
+    }
+
+    // 点击面板之外的本应用窗口或其他应用区域时收起面板，补足 accessory 窗口失焦不稳定的场景。
+    private func installOutsideClickHandling() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+        localMouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.collapseExpandedPanelAfterOutsideClick(eventWindow: event.window)
+            return event
+        }
+        globalMouseEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.collapseExpandedPanelAfterOutsideClick(eventWindow: nil)
+            }
+        }
+    }
+
+    // 外部点击只在展开态生效；面板自身点击继续交给 SwiftUI 行、按钮和右键菜单处理。
+    private func collapseExpandedPanelAfterOutsideClick(eventWindow: NSWindow?) {
+        guard viewModel.isExpanded else { return }
+        guard eventWindow !== window else { return }
         collapseWorkItem?.cancel()
         setExpanded(false)
     }
@@ -338,7 +370,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 刘海入口点击时使用收起态窗口自身作为锚点，避免展开面板飘到右上角兜底位置。
     private func revealFromNotchEntry() {
-        reveal(anchorFrame: window?.frame, tracksMouseExit: true)
+        // 刘海入口展开后不跟踪鼠标移出，避免窗口在顶部边界收起时进入几何抖动循环。
+        reveal(anchorFrame: window?.frame, tracksMouseExit: false)
     }
 
     // 统一展开入口，确保状态栏点击和热键行为一致。
@@ -359,18 +392,17 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private func handleHoverChanged(_ isHovered: Bool) {
         collapseWorkItem?.cancel()
         if isHovered {
-            guard !suppressEntryHoverUntilExit else { return }
-            guard !viewModel.isExpanded else { return }
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self, self.isMouseInsideWindow() else { return }
-                self.setExpanded(true, tracksMouseExit: true)
-            }
-            collapseWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + expandDelay, execute: workItem)
+            // 悬停不再自动展开，避免同一个窗口在 resize 后被 enter/exit 事件拉进开合循环。
             return
         }
-        suppressEntryHoverUntilExit = false
         // 展开后的收起由鼠标位置轮询负责，避免窗口变形时的 mouseExited 把状态机拉进循环。
+        clearSuppressedHoverIfMouseLeftCollapsedEntry()
+    }
+
+    // 收起后的 setFrame 可能触发一次合成 mouseExited，只有鼠标真的离开收起态入口时才恢复自动展开。
+    private func clearSuppressedHoverIfMouseLeftCollapsedEntry() {
+        guard suppressEntryHoverUntilExit, !isMouseInsideCollapsedEntry() else { return }
+        suppressEntryHoverUntilExit = false
     }
 
     // 收起态左键点击直接展开；展开后的列表点击继续交给 SwiftUI 处理。
@@ -508,9 +540,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 收起后如果鼠标仍压在入口上，先等真实离开再允许下一次自动展开，避免无鼠标移动时反复开合。
     private func isMouseInsideCollapsedEntry() -> Bool {
         guard keepsCollapsedEntryVisible, let window else { return false }
-        let collapsedSize = NotchWindowMetrics.collapsedSize(for: window.screen ?? NSScreen.main)
-        let collapsedFrame = CGRect(origin: NotchWindowMetrics.origin(for: collapsedSize, on: window.screen ?? NSScreen.main), size: collapsedSize)
-        return collapsedFrame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        // 直接使用当前真实窗口 frame，避免顶部边界或多屏状态下重算 screen/origin 产生偏差。
+        return window.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
     }
 
     // 同时注册本地按键和系统热键；系统热键失败时，本地快捷键仍可在窗口聚焦时使用。

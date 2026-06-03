@@ -105,7 +105,7 @@ struct NotchView: View {
     private var collapsedHeader: some View {
         HStack(alignment: .center, spacing: 7) {
             let currentSession = collapsedDisplaySession
-            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 11)
+            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 14)
             Text(collapsedTitle(for: currentSession))
                 .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.90))
@@ -168,7 +168,7 @@ struct NotchView: View {
     private var expandedHeader: some View {
         HStack(alignment: .center, spacing: 8) {
             let currentSession = model.state.sessions.first
-            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 11)
+            StatusDot(status: currentSession?.status ?? model.state.aggregateStatus, size: 14)
             Text(collapsedTitle(for: currentSession))
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.90))
@@ -307,8 +307,8 @@ private struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            StatusDot(status: session.status, size: 9)
-                .frame(width: 11, alignment: .center)
+            StatusDot(status: session.status, size: 12)
+                .frame(width: 14, alignment: .center)
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.displayTitle)
@@ -387,23 +387,51 @@ private struct NotchBackgroundShape: Shape {
     }
 }
 
-// 统一单层状态灯样式，红黄闪烁，绿灯常亮。
+// 状态灯使用插画化深蓝外壳、白色描边和大比例发光灯面，贴近智能交通插画风格。
 private struct StatusDot: View {
     let status: SessionStatus
     let size: CGFloat
     @State private var isBlinking = true
 
     var body: some View {
-        Circle()
-            .fill(color.opacity(dotOpacity))
-            .frame(width: size, height: size)
-            .task(id: status) {
-                isBlinking = true
-                guard shouldBlink else { return }
-                withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
-                    isBlinking = false
-                }
+        ZStack {
+            Circle()
+                .fill(LinearGradient(colors: [Color(red: 0.10, green: 0.18, blue: 0.27), Color(red: 0.02, green: 0.06, blue: 0.11)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            Circle()
+                .stroke(Color.white.opacity(0.78), lineWidth: max(0.7, size * 0.075))
+                .padding(size * 0.05)
+            Circle()
+                .stroke(Color(red: 0.01, green: 0.03, blue: 0.06).opacity(0.95), lineWidth: max(1.2, size * 0.16))
+                .padding(size * 0.10)
+            Circle()
+                .fill(RadialGradient(colors: [highlightColor.opacity(0.95 * dotOpacity), color.opacity(dotOpacity), deepColor.opacity(dotOpacity)], center: UnitPoint(x: 0.40, y: 0.34), startRadius: 0, endRadius: size * 0.46))
+                .padding(size * 0.16)
+            Circle()
+                .stroke(Color.white.opacity(0.22), lineWidth: max(0.5, size * 0.035))
+                .padding(size * 0.16)
+            // 点阵直接落在放大的彩色灯面上，强化参考图里的数字化玻璃质感。
+            ForEach(Self.textureOffsets.indices, id: \.self) { index in
+                let offset = Self.textureOffsets[index]
+                Circle()
+                    .fill(Color.white.opacity(0.18 * dotOpacity))
+                    .frame(width: max(1, size * 0.055), height: max(1, size * 0.055))
+                    .offset(x: offset.x * size, y: offset.y * size)
             }
+            Circle()
+                .trim(from: 0.58, to: 0.78)
+                .stroke(Color.white.opacity(0.76 * dotOpacity), style: StrokeStyle(lineWidth: max(1, size * 0.09), lineCap: .round))
+                .padding(size * 0.22)
+                .rotationEffect(.degrees(-18))
+        }
+        .frame(width: size, height: size)
+        .shadow(color: color.opacity(0.40 * dotOpacity), radius: max(1.2, size * 0.16), x: 0, y: 0)
+        .task(id: status) {
+            isBlinking = true
+            guard status != .green else { return }
+            withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+                isBlinking = false
+            }
+        }
     }
 
     private var color: Color {
@@ -411,17 +439,51 @@ private struct StatusDot: View {
         case .red:
             return Color(red: 1.0, green: 0.25, blue: 0.22)
         case .yellow:
-            return Color(red: 1.0, green: 0.72, blue: 0.0)
+            return Color(red: 1.0, green: 0.92, blue: 0.10)
         case .green:
             return Color(red: 0.25, green: 0.86, blue: 0.42)
         }
     }
 
-    private var shouldBlink: Bool {
-        status != .green
+    private var highlightColor: Color {
+        switch status {
+        case .red:
+            return Color(red: 1.0, green: 0.45, blue: 0.42)
+        case .yellow:
+            return Color(red: 1.0, green: 0.83, blue: 0.25)
+        case .green:
+            return Color(red: 0.40, green: 0.95, blue: 0.58)
+        }
+    }
+
+    private var deepColor: Color {
+        switch status {
+        case .red:
+            return Color(red: 0.42, green: 0.01, blue: 0.0)
+        case .yellow:
+            return Color(red: 0.64, green: 0.32, blue: 0.0)
+        case .green:
+            return Color(red: 0.0, green: 0.34, blue: 0.12)
+        }
     }
 
     private var dotOpacity: Double {
-        shouldBlink && !isBlinking ? 0.30 : 1.0
+        guard status != .green else { return 1.0 }
+        return isBlinking ? 1.0 : 0.45
     }
+
+    private static let textureOffsets: [CGPoint] = [
+        CGPoint(x: -0.18, y: -0.20),
+        CGPoint(x: 0.0, y: -0.22),
+        CGPoint(x: 0.18, y: -0.20),
+        CGPoint(x: -0.28, y: -0.04),
+        CGPoint(x: -0.10, y: -0.04),
+        CGPoint(x: 0.10, y: -0.04),
+        CGPoint(x: 0.28, y: -0.04),
+        CGPoint(x: -0.18, y: 0.12),
+        CGPoint(x: 0.0, y: 0.12),
+        CGPoint(x: 0.18, y: 0.12),
+        CGPoint(x: -0.08, y: 0.28),
+        CGPoint(x: 0.10, y: 0.28)
+    ]
 }
