@@ -2,7 +2,7 @@ import Combine
 import CoreGraphics
 import Foundation
 
-// 胶囊入口尺寸使用固定档位，避免自由输入导致文字或状态点溢出。
+// 悬浮球入口尺寸使用固定档位，避免自由输入导致图标和光环溢出。
 enum CapsuleSize: String, CaseIterable, Identifiable {
     case compact
     case regular
@@ -24,16 +24,16 @@ enum CapsuleSize: String, CaseIterable, Identifiable {
     var dimensions: CGSize {
         switch self {
         case .compact:
-            return CGSize(width: 76, height: 26)
+            return CGSize(width: 80, height: 80)
         case .regular:
-            return CGSize(width: 82, height: 28)
+            return CGSize(width: 96, height: 96)
         case .large:
-            return CGSize(width: 96, height: 32)
+            return CGSize(width: 112, height: 112)
         }
     }
 }
 
-// 负责胶囊入口尺寸的 UserDefaults 持久化，并通知浮窗控制器即时更新。
+// 负责悬浮球入口尺寸的 UserDefaults 持久化，并通知浮窗控制器即时更新。
 final class CapsuleSettings: ObservableObject {
     static let shared = CapsuleSettings()
     static let changedNotification = Notification.Name("CodexNotchCapsuleSettingsChanged")
@@ -48,7 +48,7 @@ final class CapsuleSettings: ObservableObject {
 
     private let defaults: UserDefaults
 
-    // 设置页切换档位后立即保存，并让当前胶囊窗口同步变更。
+    // 设置页切换档位后立即保存，并让当前悬浮球窗口同步变更。
     func select(size updatedSize: CapsuleSize) {
         guard size != updatedSize else { return }
         size = updatedSize

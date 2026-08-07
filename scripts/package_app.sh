@@ -30,11 +30,21 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 cd "$APP_DIR"
 swift build -c "$CONFIGURATION" --product "$EXECUTABLE_NAME"
 BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+RESOURCE_BUNDLE="$BIN_DIR/CodexNotch_CodexNotch.bundle"
+THIRD_PARTY_NOTICE="$APP_DIR/THIRD_PARTY_NOTICES.md"
+
+# DockCat 图片、许可证和归属说明必须同时进入 app，缺失时停止生成不完整产物。
+if [[ ! -d "$RESOURCE_BUNDLE" || ! -f "$THIRD_PARTY_NOTICE" ]]; then
+    echo "缺少 DockCat 资源 bundle 或第三方归属说明" >&2
+    exit 66
+fi
 
 # 重建 bundle，避免旧产物残留影响本次 app 内容。
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_DIR/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
+cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
+cp "$THIRD_PARTY_NOTICE" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
 
 # 写入最小 Info.plist，让 Finder 能把产物识别为 macOS 应用。
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true

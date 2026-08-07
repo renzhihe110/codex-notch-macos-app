@@ -4,18 +4,18 @@ import Foundation
 enum StatusMapper {
     // 支持直接从 reader 快照生成 notch 展示状态。
     static func map(snapshot: CodexStoreSnapshot, now: Date = Date()) -> NotchState {
-        map(sessions: snapshot.sessions, errorMessage: snapshot.errors.first, now: now)
+        map(sessions: snapshot.sessions, todayTokenUsage: snapshot.todayTokenUsage, errorMessage: snapshot.errors.first, now: now)
     }
 
     // 支持调用方只传可见会话列表，便于后续 UI 自行决定过滤范围。
     static func map(sessions: [CodexSession], now: Date = Date()) -> NotchState {
-        map(sessions: sessions, errorMessage: nil, now: now)
+        map(sessions: sessions, todayTokenUsage: .empty(dayStart: Calendar.current.startOfDay(for: now)), errorMessage: nil, now: now)
     }
 
     // 保留 reader 错误，避免无会话且读取失败时显示绿色健康态。
-    private static func map(sessions: [CodexSession], errorMessage: String?, now: Date) -> NotchState {
+    private static func map(sessions: [CodexSession], todayTokenUsage: TodayTokenUsage, errorMessage: String?, now: Date) -> NotchState {
         let mappedSessions = sessions.map { mappedSession($0, now: now) }
-        return NotchState(sessions: mappedSessions, aggregateStatus: aggregateStatus(for: mappedSessions, errorMessage: errorMessage), lastUpdatedAt: latestActivity(in: mappedSessions, fallback: now), errorMessage: errorMessage)
+        return NotchState(sessions: mappedSessions, aggregateStatus: aggregateStatus(for: mappedSessions, errorMessage: errorMessage), lastUpdatedAt: latestActivity(in: mappedSessions, fallback: now), todayTokenUsage: todayTokenUsage, errorMessage: errorMessage)
     }
 
     // 单会话状态按红色错误或等待输入、黄色运行、其余绿色处理。
@@ -46,7 +46,7 @@ enum StatusMapper {
     // 保留原会话展示字段，仅替换计算后的状态。
     private static func mappedSession(_ session: CodexSession, now: Date) -> CodexSession {
         let mappedStatus = status(for: session)
-        return CodexSession(id: session.id, title: session.title, cwd: session.cwd, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, status: mappedStatus, attention: attention(for: session, status: mappedStatus, now: now))
+        return CodexSession(id: session.id, title: session.title, cwd: session.cwd, createdAt: session.createdAt, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, completionEventAt: session.completionEventAt, status: mappedStatus, attention: attention(for: session, status: mappedStatus, now: now))
     }
 
     // 在红黄绿之外补一层注意力原因，只服务提醒和文案，不改变原始数据。
@@ -77,8 +77,8 @@ enum StatusMapper {
         needles.contains { haystack.contains($0) }
     }
 
-    // 模型中间消息也表示当前 turn 尚未结束，直到明确的 task_complete 覆盖为完成态。
-    private static let activeTurnSignals = ["function_call", "custom_tool_call", "agent_message", "message"]
+    // Codex 运行中事件统一黄灯，直到明确的 task_complete 覆盖为完成态。
+    private static let activeTurnSignals = ["task_started", "reasoning", "agent_message", "message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"]
 
     // 工具调用、工具输出和模型消息都表示当前 turn 仍在推进。
     private static func containsActiveEvent(in signal: String) -> Bool {

@@ -8,7 +8,7 @@ struct CodexNotchApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared)
+            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared, completionPopupSettings: CompletionPopupSettings.shared, pairingStore: PairingStore.shared, lanStatusServer: LANStatusServer.shared)
         }
     }
 }
@@ -20,15 +20,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
     private let capsuleSettings = CapsuleSettings.shared
+    private let completionPopupSettings = CompletionPopupSettings.shared
+    private let pairingStore = PairingStore.shared
+    private let lanStatusServer = LANStatusServer.shared
     private var notchWindowController: NotchWindowController?
     private var statusBarItemController: StatusBarItemController?
-    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings)
+    private lazy var completionPopupController = CompletionPopupController(settings: completionPopupSettings, onOpenSession: { [weak self] session in
+        self?.jump(to: session)
+    })
+    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, pairingStore: pairingStore, lanStatusServer: lanStatusServer)
     private var refreshTimer: Timer?
     private var displayMode: EntryDisplayMode = .notchCentered
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         alertNotifier.requestAuthorization()
+        lanStatusServer.start(pairingStore: pairingStore)
         let initialState = StatusMapper.map(sessions: [], now: Date())
         let controller = NotchWindowController(initialState: initialState, hotKeySettings: hotKeySettings, onSelectSession: { [weak self] session in
             self?.jump(to: session)
@@ -37,22 +44,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }, onQuit: {
             NSApp.terminate(nil)
         }, onToggleMode: { [weak self] in
-            self?.switchDisplayMode(to: .capsule)
+            self?.toggleDisplayMode()
         })
         notchWindowController = controller
-        statusBarItemController = StatusBarItemController(initialState: initialState, capsuleSettings: capsuleSettings, onActivate: { [weak self] anchorFrame in
-            self?.notchWindowController?.revealFromStatusItem(anchorFrame: anchorFrame)
-        }, onMove: { [weak self] anchorFrame in
-            self?.notchWindowController?.updateExternalEntryFrame(anchorFrame)
-        }, onMouseExit: { [weak self] in
-            self?.notchWindowController?.collapseExternalPanelIfNeeded()
+        let statusController = StatusBarItemController(initialState: initialState, capsuleSettings: capsuleSettings, onActivate: { [weak self] entryFrame in
+            self?.notchWindowController?.toggleFromStatusItem(entryFrame: entryFrame)
         }, onOpenSettings: { [weak self] in
             self?.openSettings()
         }, onQuit: {
             NSApp.terminate(nil)
         }, onToggleMode: { [weak self] in
-            self?.switchDisplayMode(to: .notchCentered)
+            self?.toggleDisplayMode()
         })
+        statusBarItemController = statusController
+        // 排除猫咪自身点击的外部收起事件，确保第二次单击可以稳定关闭 Dashboard。
+        notchWindowController?.setExternalEntryWindow(statusController.entryWindow)
         applyDisplayMode()
         refreshStatus()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -62,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        lanStatusServer.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -73,7 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = StatusMapper.map(snapshot: snapshot)
         notchWindowController?.update(state: state)
         statusBarItemController?.update(state: state)
+        lanStatusServer.broadcast(snapshot: LANStatusSnapshotMapper.snapshot(from: state))
         alertNotifier.notifyIfNeeded(for: state.sessions)
+        // 首次读取失败且没有会话时不建立完成基线，避免恢复读取后误弹历史完成任务。
+        if !snapshot.sessions.isEmpty || snapshot.errors.isEmpty {
+            completionPopupController.showIfNeededFor(sessions: state.sessions)
+        }
     }
 
     // 入口模式只影响桌面入口形态，不触碰会话状态、热键和通知刷新。
@@ -81,6 +93,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard displayMode != mode else { return }
         displayMode = mode
         applyDisplayMode()
+    }
+
+    // 两个入口都通过同一切换动作互相跳转，悬浮 Dashboard 的右键菜单也能正确返回刘海模式。
+    private func toggleDisplayMode() {
+        switch displayMode {
+        case .notchCentered:
+            switchDisplayMode(to: .capsule)
+        case .capsule:
+            switchDisplayMode(to: .notchCentered)
+        }
     }
 
     // 两种入口互斥显示；胶囊每次切换进入都回到默认位置。
@@ -115,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
 }
 
 // 运行期入口展示模式不持久化，启动始终回到刘海居中。
@@ -125,12 +148,13 @@ private enum EntryDisplayMode {
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
 private final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings) {
-        let contentSize = CGSize(width: 420, height: 215)
+    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, pairingStore: PairingStore, lanStatusServer: LANStatusServer) {
+        // 设置页新增目录颜色取色盘后扩展窗口高度，避免局域网配置被裁切。
+        let contentSize = CGSize(width: 520, height: 625)
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Notch 设置"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings))
+        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, pairingStore: pairingStore, lanStatusServer: lanStatusServer))
         super.init(window: window)
         window.delegate = self
     }

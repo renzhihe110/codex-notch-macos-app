@@ -1,42 +1,44 @@
 import AppKit
 
-// 管理可拖动胶囊浮窗入口；它不使用 NSStatusItem，也不保存用户拖动位置。
+// 管理可拖动悬浮球入口；它不使用 NSStatusItem，也不保存用户拖动位置。
 final class StatusBarItemController: NSObject {
     private let window: NSWindow
     private let pillView: StatusPillView
-    private let onActivate: (CGRect?) -> Void
-    private let onMove: (CGRect) -> Void
-    private let onMouseExit: () -> Void
+    private let onActivate: (CGRect) -> Void
     private let onOpenSettings: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
     private let capsuleSettings: CapsuleSettings
+    private let restingImage: NSImage
+    private let standingImage: NSImage
+    private let walkingImages: [NSImage]
     private var state: NotchState
-    private var blinkTimer: Timer?
+    private var animationTimer: Timer?
     private var carouselTimer: Timer?
     private var capsuleSettingsObserver: NSObjectProtocol?
-    private var isBlinkingOn = true
+    private var displayedStatus: SessionStatus?
+    private var walkingFrameIndex = 0
     private var carouselIndex = 0
     private var isEntryVisible = false
     private var hasPositionedForCurrentShow = false
     private var dragStartMouseLocation: CGPoint?
     private var dragStartWindowOrigin: CGPoint?
     private var didDrag = false
-    private var hoverWorkItem: DispatchWorkItem?
     private let dragThreshold: CGFloat = 3
-    private let hoverDelay: TimeInterval = 0.10
     private var pillSize: CGSize
 
-    init(initialState: NotchState, capsuleSettings: CapsuleSettings, onActivate: @escaping (CGRect?) -> Void, onMove: @escaping (CGRect) -> Void, onMouseExit: @escaping () -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
+    init(initialState: NotchState, capsuleSettings: CapsuleSettings, onActivate: @escaping (CGRect) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         let initialPillSize = capsuleSettings.size.dimensions
+        let dockCatAssets = DockCatAssets.load()
         self.state = initialState
         self.onActivate = onActivate
-        self.onMove = onMove
-        self.onMouseExit = onMouseExit
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
         self.capsuleSettings = capsuleSettings
+        self.restingImage = dockCatAssets.resting
+        self.standingImage = dockCatAssets.standing
+        self.walkingImages = dockCatAssets.walking
         self.pillSize = initialPillSize
         self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: initialPillSize))
         self.window = NSWindow(contentRect: CGRect(origin: .zero, size: initialPillSize), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -48,50 +50,52 @@ final class StatusBarItemController: NSObject {
         update(state: initialState)
     }
 
+    // Dashboard 控制器只用这个窗口排除猫咪自身点击，不读取其位置做面板定位。
+    var entryWindow: NSWindow { window }
+
     deinit {
-        blinkTimer?.invalidate()
+        animationTimer?.invalidate()
         carouselTimer?.invalidate()
-        hoverWorkItem?.cancel()
         if let capsuleSettingsObserver {
             NotificationCenter.default.removeObserver(capsuleSettingsObserver)
         }
     }
 
-    // 刷新胶囊展示，并按当前颜色启停闪烁计时器；刷新不会改动用户拖动后的位置。
+    // 刷新猫咪状态并按黄色聚合状态启停逐帧动画；刷新不会改动用户拖动后的位置。
     func update(state: NotchState) {
         self.state = state
         normalizeCarouselIndex()
-        configureBlinkTimer()
+        updateAnimationState()
         updatePillView()
         guard isEntryVisible else { return }
-        window.display()
-        window.orderFrontRegardless()
+        window.displayIfNeeded()
     }
 
-    // 显示胶囊入口；进入胶囊模式时强制回到默认位置。
+    // 显示悬浮球入口；进入悬浮模式时强制回到默认位置。
     func showEntry(resetPosition: Bool = false) {
         isEntryVisible = true
         if resetPosition || !hasPositionedForCurrentShow {
             positionWindowAtDefault()
             hasPositionedForCurrentShow = true
         }
+        updateAnimationState()
         updatePillView()
         window.orderFrontRegardless()
     }
 
-    // 隐藏胶囊入口，同时清理未完成的拖动状态。
+    // 隐藏悬浮球入口，同时清理未完成的拖动状态。
     func hideEntry() {
         isEntryVisible = false
         dragStartMouseLocation = nil
         dragStartWindowOrigin = nil
         didDrag = false
-        hoverWorkItem?.cancel()
+        stopWalkingAnimation()
         pillView.isHighlighted = false
         pillView.needsDisplay = true
         window.orderOut(nil)
     }
 
-    // 胶囊浮窗保持无阴影透明背景，避免系统窗口阴影让小尺寸圆角边缘发虚。
+    // 猫咪入口窗口保持透明背景，不额外绘制底色、光环或系统阴影。
     private func configureWindow() {
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -104,16 +108,15 @@ final class StatusBarItemController: NSObject {
         window.hidesOnDeactivate = false
     }
 
-    // 胶囊区分点击、拖动和右键菜单；只有普通点击才展开面板。
+    // 悬浮球区分点击、拖动和右键菜单；只有普通点击才展开面板。
     private func configurePillView() {
         pillView.onMouseDown = { [weak self] event in self?.beginDrag(with: event) }
         pillView.onMouseDragged = { [weak self] event in self?.continueDrag(with: event) }
         pillView.onMouseUp = { [weak self] event in self?.endDrag(with: event) }
         pillView.onRightClick = { [weak self] event in self?.showContextMenu(with: event) }
-        pillView.onHoverChanged = { [weak self] isHovered in self?.handleHoverChanged(isHovered) }
     }
 
-    // 监听设置页尺寸变更，保持胶囊窗口和展开面板锚点同步更新。
+    // 监听设置页尺寸变更，保持悬浮球窗口和展开面板锚点同步更新。
     private func configureCapsuleSettingsObserver() {
         capsuleSettingsObserver = NotificationCenter.default.addObserver(forName: CapsuleSettings.changedNotification, object: capsuleSettings, queue: .main) { [weak self] _ in
             guard let self else { return }
@@ -131,27 +134,41 @@ final class StatusBarItemController: NSObject {
         }
     }
 
-    // 红黄灯保持轻量闪烁，绿灯常亮。
-    private func configureBlinkTimer() {
-        guard currentStatus != .green else {
-            blinkTimer?.invalidate()
-            blinkTimer = nil
-            isBlinkingOn = true
+    // 黄色状态以 DockCat 默认 3fps 顺序循环四帧，绿色和红色只保留静态图片。
+    private func updateAnimationState() {
+        let statusChanged = displayedStatus != state.aggregateStatus
+        displayedStatus = state.aggregateStatus
+        if statusChanged {
+            walkingFrameIndex = 0
+        }
+        guard isEntryVisible, state.aggregateStatus == .yellow else {
+            stopWalkingAnimation()
             return
         }
-        guard blinkTimer == nil else { return }
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.isBlinkingOn.toggle()
+        guard animationTimer == nil else { return }
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 3.0, repeats: true) { [weak self] _ in
+            guard let self, !self.walkingImages.isEmpty else { return }
+            self.walkingFrameIndex = (self.walkingFrameIndex + 1) % self.walkingImages.count
             self.updatePillView()
         }
     }
 
-    // 按状态同步胶囊圆点、短标题和悬浮提示。
+    // 离开黄色状态或隐藏入口时立即停止动画，避免后台无效唤醒。
+    private func stopWalkingAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
+
+    // 按聚合状态同步猫咪帧和悬浮提示。
     private func updatePillView() {
-        pillView.status = currentStatus
-        pillView.title = displayText
-        pillView.isBlinkingOn = isBlinkingOn
+        switch displayedStatus ?? state.aggregateStatus {
+        case .red:
+            pillView.image = standingImage
+        case .yellow:
+            pillView.image = walkingImages[walkingFrameIndex % walkingImages.count]
+        case .green:
+            pillView.image = restingImage
+        }
         pillView.toolTip = tooltipText
     }
 
@@ -164,7 +181,6 @@ final class StatusBarItemController: NSObject {
         window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
         guard isEntryVisible else { return }
         window.orderFrontRegardless()
-        onMove(window.frame)
     }
 
     // 默认位置放在主屏顶部可见区域，后续完全交给用户拖动。
@@ -178,7 +194,6 @@ final class StatusBarItemController: NSObject {
 
     // 记录按下时的全局坐标和窗口原点，后续用全局坐标差值移动窗口。
     private func beginDrag(with event: NSEvent) {
-        hoverWorkItem?.cancel()
         dragStartMouseLocation = NSEvent.mouseLocation
         dragStartWindowOrigin = window.frame.origin
         didDrag = false
@@ -196,7 +211,6 @@ final class StatusBarItemController: NSObject {
         }
         guard didDrag else { return }
         window.setFrameOrigin(CGPoint(x: dragStartWindowOrigin.x + delta.width, y: dragStartWindowOrigin.y + delta.height))
-        onMove(window.frame)
     }
 
     // 松手时根据拖动判定决定是展开面板还是只结束拖动。
@@ -211,29 +225,11 @@ final class StatusBarItemController: NSObject {
         onActivate(window.frame)
     }
 
-    // 胶囊右键菜单保留原有设置和退出，并新增切回刘海居中模式。
+    // 悬浮球右键菜单保留原有设置和退出，并新增切回刘海居中模式。
     private func showContextMenu(with event: NSEvent) {
-        hoverWorkItem?.cancel()
         pillView.isHighlighted = false
         pillView.needsDisplay = true
         NSMenu.popUpContextMenu(contextMenu, with: event, for: pillView)
-    }
-
-    // 胶囊悬停短暂停留后展开面板，避免扫过或准备拖动时误弹。
-    private func handleHoverChanged(_ isHovered: Bool) {
-        hoverWorkItem?.cancel()
-        guard isHovered else {
-            guard isEntryVisible, dragStartMouseLocation == nil else { return }
-            onMouseExit()
-            return
-        }
-        guard isEntryVisible, dragStartMouseLocation == nil else { return }
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.isEntryVisible, self.dragStartMouseLocation == nil else { return }
-            self.onActivate(self.window.frame)
-        }
-        hoverWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + hoverDelay, execute: workItem)
     }
 
     private lazy var contextMenu: NSMenu = {
@@ -274,26 +270,11 @@ final class StatusBarItemController: NSObject {
         return carouselSessions[carouselIndex % carouselSessions.count]
     }
 
-    private var currentStatus: SessionStatus {
-        currentSession?.status ?? state.aggregateStatus
-    }
-
     private var progressText: String {
         let total = state.sessions.count
         guard total > 0 else { return "0/0" }
         let completed = state.sessions.filter { $0.status == .green }.count
         return "\(completed)/\(total)"
-    }
-
-    private var displayText: String {
-        switch currentStatus {
-        case .red:
-            return currentSession?.attention == .waitingInput ? "待输入" : "异常"
-        case .yellow:
-            return "运行中"
-        case .green:
-            return "完成"
-        }
     }
 
     private var tooltipText: String {
@@ -323,38 +304,31 @@ final class StatusBarItemController: NSObject {
     }
 }
 
-// 自绘状态胶囊，左侧状态圆点，右侧短文案。
+// 从 SwiftPM 资源包加载固定版本的 DockCat 素材，缺失时立即暴露打包错误。
+private struct DockCatAssets {
+    let resting: NSImage
+    let standing: NSImage
+    let walking: [NSImage]
+
+    static func load() -> DockCatAssets {
+        DockCatAssets(resting: loadImage(named: "loaf"), standing: loadImage(named: "stand"), walking: (1...4).map { loadImage(named: String(format: "walk_%02d", $0)) })
+    }
+
+    private static func loadImage(named name: String) -> NSImage {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "png"), let image = NSImage(contentsOf: url) else {
+            preconditionFailure("缺少 DockCat 资源：\(name).png")
+        }
+        return image
+    }
+}
+
+// 猫咪入口只绘制透明 PNG，并保留原有点击、拖动和右键事件。
 private final class StatusPillView: NSControl {
-    var status: SessionStatus = .green { didSet { needsDisplay = true } }
-    var title: String = "" { didSet { needsDisplay = true } }
-    var isBlinkingOn = true { didSet { needsDisplay = true } }
+    var image: NSImage? { didSet { if oldValue !== image { needsDisplay = true } } }
     var onMouseDown: ((NSEvent) -> Void)?
     var onMouseDragged: ((NSEvent) -> Void)?
     var onMouseUp: ((NSEvent) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
-    var onHoverChanged: ((Bool) -> Void)?
-    private var hoverTrackingArea: NSTrackingArea?
-
-    // 胶囊浮窗使用 AppKit tracking area 感知悬停，不影响点击和拖动事件。
-    override func updateTrackingAreas() {
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let trackingArea = NSTrackingArea(rect: bounds, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self, userInfo: nil)
-        hoverTrackingArea = trackingArea
-        addTrackingArea(trackingArea)
-        super.updateTrackingAreas()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        onHoverChanged?(true)
-        super.mouseEntered(with: event)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onHoverChanged?(false)
-        super.mouseExited(with: event)
-    }
 
     // 左键按下只记录状态，真正点击动作在 mouseUp 中按拖动阈值判断。
     override func mouseDown(with event: NSEvent) {
@@ -376,131 +350,14 @@ private final class StatusPillView: NSControl {
         onRightClick?(event)
     }
 
-    // 胶囊绘制成深色圆角形态，宽度收窄后仍能显示状态点和短文案。
+    // 图片等比缩放并贴底显示，不绘制圆形底、光环或独立状态点。
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let pillRect = bounds.insetBy(dx: 1.5, dy: 2)
-        let background = isHighlighted ? NSColor(calibratedWhite: 0.05, alpha: 0.95) : NSColor(calibratedWhite: 0.07, alpha: 0.90)
-        background.setFill()
-        NSBezierPath(roundedRect: pillRect, xRadius: pillRect.height / 2, yRadius: pillRect.height / 2).fill()
-        NSColor.white.withAlphaComponent(0.10).setStroke()
-        let border = NSBezierPath(roundedRect: pillRect.insetBy(dx: 0.5, dy: 0.5), xRadius: (pillRect.height - 1) / 2, yRadius: (pillRect.height - 1) / 2)
-        border.lineWidth = 0.5
-        border.stroke()
-        drawStatusDot(in: pillRect)
-        drawTitle(in: pillRect)
+        guard let image, image.size.width > 0, image.size.height > 0 else { return }
+        let targetBounds = bounds.insetBy(dx: 2, dy: 2)
+        let scale = min(targetBounds.width / image.size.width, targetBounds.height / image.size.height)
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let targetRect = NSRect(x: targetBounds.midX - targetSize.width / 2, y: targetBounds.minY, width: targetSize.width, height: targetSize.height)
+        image.draw(in: targetRect, from: .zero, operation: .sourceOver, fraction: isHighlighted ? 0.78 : 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
     }
-
-    // 状态圆点改为插画化交通灯：灯面更大，外圈保留深蓝壳体和白色描边。
-    private func drawStatusDot(in pillRect: NSRect) {
-        let dotSize = min(16, pillRect.height - 6)
-        let dotRect = NSRect(x: pillRect.minX + 7, y: pillRect.midY - dotSize / 2, width: dotSize, height: dotSize)
-        let dotAlpha: CGFloat = status == .green || isBlinkingOn ? 1.0 : 0.45
-        drawTrafficLens(in: dotRect, alpha: dotAlpha)
-    }
-
-    // AppKit 入口复刻 SwiftUI 插画状态灯的同款层次，避免胶囊模式和刘海模式割裂。
-    private func drawTrafficLens(in rect: NSRect, alpha: CGFloat) {
-        NSColor(red: 0.02, green: 0.06, blue: 0.11, alpha: 1.0).setFill()
-        NSBezierPath(ovalIn: rect).fill()
-        let rimRect = rect.insetBy(dx: rect.width * 0.05, dy: rect.height * 0.05)
-        NSColor(red: 0.10, green: 0.18, blue: 0.27, alpha: 1.0).setFill()
-        NSBezierPath(ovalIn: rimRect).fill()
-        let outlinePath = NSBezierPath(ovalIn: rimRect)
-        NSColor.white.withAlphaComponent(0.78).setStroke()
-        outlinePath.lineWidth = max(0.7, rect.width * 0.075)
-        outlinePath.stroke()
-        let ringRect = rect.insetBy(dx: rect.width * 0.10, dy: rect.height * 0.10)
-        let ringPath = NSBezierPath(ovalIn: ringRect)
-        NSColor(red: 0.01, green: 0.03, blue: 0.06, alpha: 0.95).setStroke()
-        ringPath.lineWidth = max(1.2, rect.width * 0.16)
-        ringPath.stroke()
-        let lensRect = rect.insetBy(dx: rect.width * 0.16, dy: rect.height * 0.16)
-        let lensPath = NSBezierPath(ovalIn: lensRect)
-        NSGraphicsContext.saveGraphicsState()
-        lensPath.addClip()
-        if let gradient = NSGradient(colors: [highlightStatusColor.withAlphaComponent(0.95 * alpha), statusColor.withAlphaComponent(alpha), darkStatusColor.withAlphaComponent(alpha)]) {
-            let center = NSPoint(x: lensRect.minX + lensRect.width * 0.40, y: lensRect.minY + lensRect.height * 0.66)
-            gradient.draw(fromCenter: center, radius: 0, toCenter: NSPoint(x: lensRect.midX, y: lensRect.midY), radius: lensRect.width * 0.62, options: [])
-        }
-        NSGraphicsContext.restoreGraphicsState()
-        NSColor.white.withAlphaComponent(0.22).setStroke()
-        lensPath.lineWidth = max(0.5, rect.width * 0.035)
-        lensPath.stroke()
-        drawLensTexture(in: lensRect, alpha: alpha)
-        let arcPath = NSBezierPath()
-        arcPath.appendArc(withCenter: NSPoint(x: lensRect.midX, y: lensRect.midY), radius: lensRect.width * 0.36, startAngle: 118, endAngle: 156)
-        NSColor.white.withAlphaComponent(0.76 * alpha).setStroke()
-        arcPath.lineWidth = max(1, rect.width * 0.09)
-        arcPath.stroke()
-    }
-
-    // 颗粒点阵模拟参考图灯罩上的数字化玻璃纹理，小尺寸下保持克制。
-    private func drawLensTexture(in lensRect: NSRect, alpha: CGFloat) {
-        let dotSize = max(1, lensRect.width * 0.065)
-        NSColor.white.withAlphaComponent(0.18 * alpha).setFill()
-        for offset in Self.lensTextureOffsets {
-            let center = NSPoint(x: lensRect.midX + offset.x * lensRect.width, y: lensRect.midY + offset.y * lensRect.height)
-            NSBezierPath(ovalIn: NSRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)).fill()
-        }
-    }
-
-    // 标题按胶囊中线绘制，避免 AppKit 默认基线造成上下偏移。
-    private func drawTitle(in pillRect: NSRect) {
-        let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.94)]
-        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
-        let textArea = NSRect(x: pillRect.minX + 29, y: pillRect.minY, width: pillRect.width - 36, height: pillRect.height)
-        let textSize = attributedTitle.size()
-        let drawPoint = NSPoint(x: textArea.midX - textSize.width / 2, y: pillRect.midY - textSize.height / 2)
-        attributedTitle.draw(at: drawPoint)
-    }
-
-    private var statusColor: NSColor {
-        switch status {
-        case .red:
-            return NSColor(red: 1.0, green: 0.25, blue: 0.22, alpha: 1.0)
-        case .yellow:
-            return NSColor(red: 1.0, green: 0.92, blue: 0.10, alpha: 1.0)
-        case .green:
-            return NSColor(red: 0.25, green: 0.86, blue: 0.42, alpha: 1.0)
-        }
-    }
-
-    private var highlightStatusColor: NSColor {
-        switch status {
-        case .red:
-            return NSColor(red: 1.0, green: 0.45, blue: 0.42, alpha: 1.0)
-        case .yellow:
-            return NSColor(red: 1.0, green: 0.83, blue: 0.25, alpha: 1.0)
-        case .green:
-            return NSColor(red: 0.40, green: 0.95, blue: 0.58, alpha: 1.0)
-        }
-    }
-
-    private var darkStatusColor: NSColor {
-        switch status {
-        case .red:
-            return NSColor(red: 0.42, green: 0.01, blue: 0.0, alpha: 1.0)
-        case .yellow:
-            return NSColor(red: 0.64, green: 0.32, blue: 0.0, alpha: 1.0)
-        case .green:
-            return NSColor(red: 0.0, green: 0.34, blue: 0.12, alpha: 1.0)
-        }
-    }
-
-    private static let lensTextureOffsets: [CGPoint] = [
-        CGPoint(x: -0.18, y: 0.20),
-        CGPoint(x: 0.0, y: 0.22),
-        CGPoint(x: 0.18, y: 0.20),
-        CGPoint(x: -0.28, y: 0.04),
-        CGPoint(x: -0.10, y: 0.04),
-        CGPoint(x: 0.10, y: 0.04),
-        CGPoint(x: 0.28, y: 0.04),
-        CGPoint(x: -0.18, y: -0.12),
-        CGPoint(x: 0.0, y: -0.12),
-        CGPoint(x: 0.18, y: -0.12),
-        CGPoint(x: -0.08, y: -0.28),
-        CGPoint(x: 0.10, y: -0.28)
-    ]
 }

@@ -14,8 +14,6 @@ enum NotchWindowMetrics {
     static let expandedBottomInset: CGFloat = 8
     static let expandedListSpacing: CGFloat = 6
     static let expandedDividerHeight: CGFloat = 1
-    // 胶囊入口和面板留出轻微间距，避免视觉上贴成硬连接。
-    static let externalEntryPanelGap: CGFloat = 6
     static let expandedHeaderBottomInset: CGFloat = 8
     static let expandedErrorHeight: CGFloat = 30
     static let expandedEmptyListHeight: CGFloat = 46
@@ -24,19 +22,19 @@ enum NotchWindowMetrics {
     static let visibleSessionLimit = 8
 
     // 展开面板高度按当前内容收缩，内容很多时仍限制在最大高度内滚动。
-    static func expandedSize(for state: NotchState, collapsedHeight: CGFloat, hasJumpError: Bool) -> CGSize {
-        CGSize(width: expandedWidth, height: expandedHeight(for: state, collapsedHeight: collapsedHeight, hasJumpError: hasJumpError))
+    static func expandedSize(for state: NotchState, collapsedHeight: CGFloat, hasJumpError: Bool, scale: CGFloat = 1) -> CGSize {
+        CGSize(width: expandedWidth * scale, height: expandedHeight(for: state, collapsedHeight: collapsedHeight, hasJumpError: hasJumpError) * scale)
     }
 
     // ScrollView 高度和窗口高度使用同一套公式，避免内容少时底部出现多余黑底。
-    static func expandedScrollHeight(for state: NotchState, collapsedHeight: CGFloat, hasJumpError: Bool) -> CGFloat {
-        let chromeHeight = expandedHeaderHeight(collapsedHeight: collapsedHeight) + expandedBottomInset + expandedDividerHeight + expandedListSpacing + expandedErrorStackHeight(for: state, hasJumpError: hasJumpError)
-        return max(0, expandedHeight(for: state, collapsedHeight: collapsedHeight, hasJumpError: hasJumpError) - chromeHeight)
+    static func expandedScrollHeight(for state: NotchState, collapsedHeight: CGFloat, hasJumpError: Bool, scale: CGFloat = 1) -> CGFloat {
+        let chromeHeight = expandedHeaderHeight(collapsedHeight: collapsedHeight, scale: scale) + expandedBottomInset * scale + expandedDividerHeight + expandedListSpacing * scale + expandedErrorStackHeight(for: state, hasJumpError: hasJumpError) * scale
+        return max(0, expandedHeight(for: state, collapsedHeight: collapsedHeight, hasJumpError: hasJumpError) * scale - chromeHeight)
     }
 
     // 头部高度保持入口行高度加分割线前留白，供 AppKit 和 SwiftUI 共用。
-    static func expandedHeaderHeight(collapsedHeight: CGFloat) -> CGFloat {
-        collapsedHeight + expandedHeaderBottomInset
+    static func expandedHeaderHeight(collapsedHeight: CGFloat, scale: CGFloat = 1) -> CGFloat {
+        (collapsedHeight + expandedHeaderBottomInset) * scale
     }
 
     private static func expandedHeight(for state: NotchState, collapsedHeight: CGFloat, hasJumpError: Bool) -> CGFloat {
@@ -91,6 +89,14 @@ enum NotchWindowMetrics {
         let y = max(visibleFrame.minY + margin, min(proposedTopY - size.height - anchorGap, topLimit - size.height))
         return CGPoint(x: min(max(proposedX, minX), maxX), y: y)
     }
+
+    // 全局快捷键展开时居中显示在可见区域，避开菜单栏和 Dock。
+    static func centeredPanelOrigin(for size: CGSize, on screen: NSScreen?) -> CGPoint {
+        guard let screen else { return .zero }
+        let visibleFrame = screen.visibleFrame
+        return CGPoint(x: visibleFrame.midX - size.width / 2, y: visibleFrame.midY - size.height / 2)
+    }
+
 }
 
 // 无边框窗口默认不能成为 key，显式允许后失焦回调才能可靠收起。
@@ -117,35 +123,6 @@ private final class KeyableBorderlessWindow: NSWindow {
 private final class NotchHostingView<Content: View>: NSHostingView<Content> {
     var onLeftClick: ((NSEvent) -> Bool)?
     var onRightClick: ((NSEvent) -> Void)?
-    var onHoverChanged: ((Bool) -> Void)?
-    private var hoverTrackingArea: NSTrackingArea?
-    private var isHovering = false
-
-    override func updateTrackingAreas() {
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let options: NSTrackingArea.Options = [.activeAlways, .inVisibleRect, .mouseEnteredAndExited]
-        let trackingArea = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
-        hoverTrackingArea = trackingArea
-        addTrackingArea(trackingArea)
-        super.updateTrackingAreas()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        setHovering(true)
-        super.mouseEntered(with: event)
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        setHovering(true)
-        super.mouseMoved(with: event)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        setHovering(false)
-        super.mouseExited(with: event)
-    }
 
     override func mouseDown(with event: NSEvent) {
         if onLeftClick?(event) == true {
@@ -162,12 +139,6 @@ private final class NotchHostingView<Content: View>: NSHostingView<Content> {
         super.rightMouseDown(with: event)
     }
 
-    // AppKit mouseMoved 会很频繁，去重后再交给窗口控制器，避免同一轮 display cycle 反复调整窗口。
-    private func setHovering(_ isHovering: Bool) {
-        guard self.isHovering != isHovering else { return }
-        self.isHovering = isHovering
-        onHoverChanged?(isHovering)
-    }
 }
 
 // 创建并定位桌面顶部中间的透明无边框刘海窗口。
@@ -178,7 +149,6 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private let onOpenSettings: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
-    private var collapseWorkItem: DispatchWorkItem?
     private var localKeyEventMonitor: Any?
     private var localMouseEventMonitor: Any?
     private var globalMouseEventMonitor: Any?
@@ -188,11 +158,13 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var registeredHotKey: HotKey?
     private var keepsCollapsedEntryVisible = true
     private var activeEntryAnchorFrame: CGRect?
-    private var suppressEntryHoverUntilExit = false
-    private var mouseTrackingTimer: Timer?
-    private var mouseLeftExpandedRegionAt: Date?
-    private var tracksExpandedMouseExit = false
-    private let collapseDelay: TimeInterval = 0.20
+    private weak var externalEntryWindow: NSWindow?
+    private var presentationScreen: NSScreen?
+    private var centersExpandedPanel = false
+    // 悬浮 Dashboard 初始居中后保留当前位置，避免状态刷新覆盖用户拖动。
+    private var preservesFloatingDashboardPosition = false
+    // 保存悬浮 Dashboard 尺寸，供窗口控制器和 SwiftUI 视图共享。
+    private let floatingDashboardSettings = FloatingDashboardSettings.shared
 
     init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
@@ -212,13 +184,18 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = false
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        // 默认不允许拖动刘海入口；悬浮 Dashboard 展开后再启用背景拖动。
+        window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
-        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onQuit: onQuit, onToggleMode: onToggleMode))
+        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
+            self?.toggleFloatingPanelPin()
+        }, onClose: { [weak self] in
+            self?.closeFloatingPanel()
+        }))
         // 刘海窗口尺寸由控制器手动 setFrame，关闭 SwiftUI 自动反写窗口约束以避免快速进出时形成 display-cycle 布局循环。
         hostingView.sizingOptions = []
         hostingView.onLeftClick = { [weak self] event in self?.handleLeftMouseDown(event) ?? false }
         hostingView.onRightClick = { [weak self] event in self?.showContextMenu(with: event) }
-        hostingView.onHoverChanged = { [weak self] isHovered in self?.handleHoverChanged(isHovered) }
         window.contentView = hostingView
         positionWindow(isExpanded: false)
         installKeyboardHandling()
@@ -245,7 +222,6 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         if let hotKeyHandlerRef {
             RemoveEventHandler(hotKeyHandlerRef)
         }
-        mouseTrackingTimer?.invalidate()
     }
 
     @available(*, unavailable)
@@ -265,11 +241,14 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 刘海居中模式显示收起态入口，并让面板关闭后回到收起态。
     func showCollapsed() {
-        collapseWorkItem?.cancel()
         keepsCollapsedEntryVisible = true
         activeEntryAnchorFrame = nil
-        suppressEntryHoverUntilExit = false
-        stopExpandedMouseTracking()
+        presentationScreen = nil
+        centersExpandedPanel = false
+        preservesFloatingDashboardPosition = false
+        viewModel.isPinned = false
+        setFloatingDashboardResizable(false)
+        window?.isMovableByWindowBackground = false
         viewModel.isPresentedFromCapsule = false
         viewModel.isExpanded = false
         positionWindow(isExpanded: false)
@@ -278,11 +257,14 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 胶囊模式隐藏刘海入口，并让胶囊打开的面板关闭后直接消失。
     func hideEntry() {
-        collapseWorkItem?.cancel()
         keepsCollapsedEntryVisible = false
         activeEntryAnchorFrame = nil
-        suppressEntryHoverUntilExit = false
-        stopExpandedMouseTracking()
+        presentationScreen = nil
+        centersExpandedPanel = false
+        preservesFloatingDashboardPosition = false
+        viewModel.isPinned = false
+        setFloatingDashboardResizable(false)
+        window?.isMovableByWindowBackground = false
         viewModel.isExpanded = false
         window?.orderOut(nil)
     }
@@ -307,10 +289,16 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 窗口失焦时收起；外部点击由独立鼠标监听兜底。
     func windowDidResignKey(_ notification: Notification) {
-        collapseWorkItem?.cancel()
-        // 悬停展开时可能短暂失去 key，鼠标仍在面板或入口内时交给鼠标跟踪决定收起。
-        guard !isMouseInsideWindow() else { return }
+        guard !viewModel.isPinned else { return }
+        // 点击猫咪时先保留面板，随后由猫咪的 mouseUp 执行显式 toggle。
+        guard !isMouseInsidePanelOrEntry() else { return }
         setExpanded(false)
+    }
+
+    // 用户拖拽悬浮 Dashboard 边缘或角落时，立即保存尺寸并同步 SwiftUI 内容布局。
+    func windowDidResize(_ notification: Notification) {
+        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else { return }
+        floatingDashboardSettings.update(size: window.frame.size)
     }
 
     // 点击面板之外的本应用窗口或其他应用区域时收起面板，补足 accessory 窗口失焦不稳定的场景。
@@ -329,80 +317,73 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 外部点击只在展开态生效；面板自身点击继续交给 SwiftUI 行、按钮和右键菜单处理。
     private func collapseExpandedPanelAfterOutsideClick(eventWindow: NSWindow?) {
-        guard viewModel.isExpanded else { return }
-        guard eventWindow !== window else { return }
-        collapseWorkItem?.cancel()
+        guard viewModel.isExpanded, !viewModel.isPinned else { return }
+        guard eventWindow !== window, eventWindow !== externalEntryWindow else { return }
         setExpanded(false)
     }
 
-    // 全局快捷键调用这个入口时，主动激活应用并展开面板，方便继续用方向键操作。
+    // 全局快捷键始终打开正常尺寸的悬浮 Dashboard，关闭后仍回到原入口模式。
     func revealForKeyboard() {
-        reveal(anchorFrame: keepsCollapsedEntryVisible ? window?.frame : nil, tracksMouseExit: false)
+        reveal(anchorFrame: nil, centersInScreen: true, expandedScale: 1, presentsFloatingDashboard: true)
     }
 
-    // 胶囊入口点击后，从对应按钮下方展开面板。
-    func revealFromStatusItem(anchorFrame: CGRect?) {
-        keepsCollapsedEntryVisible = false
-        reveal(anchorFrame: anchorFrame, tracksMouseExit: true)
-    }
-
-    // 胶囊拖动时同步外部入口位置；只有胶囊打开的面板会跟随移动。
-    func updateExternalEntryFrame(_ anchorFrame: CGRect) {
-        guard !keepsCollapsedEntryVisible else { return }
-        activeEntryAnchorFrame = anchorFrame
-        guard viewModel.isExpanded else { return }
-        collapseWorkItem?.cancel()
-        positionWindow(isExpanded: true, anchorFrame: anchorFrame)
-        window?.orderFrontRegardless()
-    }
-
-    // 鼠标离开胶囊后延迟确认位置；没进入面板或回到胶囊时才收起。
-    func collapseExternalPanelIfNeeded() {
-        guard !keepsCollapsedEntryVisible, viewModel.isExpanded else { return }
-        collapseWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, !self.isMouseInsideWindow() else { return }
-            self.setExpanded(false)
+    // 全局快捷键使用显式 toggle：已展开时收起，未展开时再按原逻辑弹出。
+    func toggleForKeyboard() {
+        guard viewModel.isExpanded else {
+            revealForKeyboard()
+            return
         }
-        collapseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + collapseDelay, execute: workItem)
+        setExpanded(false)
+    }
+
+    // 记录猫咪窗口，仅用于外部点击排除，不参与 Dashboard 定位。
+    func setExternalEntryWindow(_ entryWindow: NSWindow) {
+        externalEntryWindow = entryWindow
+    }
+
+    // 猫咪单击显式切换正常尺寸 Dashboard，并在猫咪所在屏幕居中显示。
+    func toggleFromStatusItem(entryFrame: CGRect) {
+        keepsCollapsedEntryVisible = false
+        if viewModel.isExpanded, viewModel.isPresentedFromCapsule {
+            setExpanded(false)
+            return
+        }
+        presentationScreen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: entryFrame.midX, y: entryFrame.midY)) } ?? NSScreen.main
+        reveal(anchorFrame: nil, centersInScreen: true, expandedScale: 1)
     }
 
     // 刘海入口点击时使用收起态窗口自身作为锚点，避免展开面板飘到右上角兜底位置。
     private func revealFromNotchEntry() {
-        // 刘海入口展开后不跟踪鼠标移出，避免窗口在顶部边界收起时进入几何抖动循环。
-        reveal(anchorFrame: window?.frame, tracksMouseExit: false)
+        reveal(anchorFrame: window?.frame, centersInScreen: false, expandedScale: 1)
     }
 
-    // 统一展开入口，确保状态栏点击和热键行为一致。
-    private func reveal(anchorFrame: CGRect?, tracksMouseExit: Bool) {
-        collapseWorkItem?.cancel()
-        suppressEntryHoverUntilExit = false
-        tracksExpandedMouseExit = tracksMouseExit
+    // 统一展开入口，快捷键可额外指定 Dashboard 样式而不改变当前入口模式。
+    private func reveal(anchorFrame: CGRect?, centersInScreen: Bool, expandedScale: CGFloat, presentsFloatingDashboard: Bool = false) {
         activeEntryAnchorFrame = anchorFrame
+        centersExpandedPanel = centersInScreen
+        viewModel.expandedScale = expandedScale
         normalizeSelectedSessionIndex()
         NSApp.activate(ignoringOtherApps: true)
-        viewModel.isPresentedFromCapsule = !keepsCollapsedEntryVisible
+        viewModel.isPresentedFromCapsule = presentsFloatingDashboard || !keepsCollapsedEntryVisible
+        setFloatingDashboardResizable(viewModel.isPresentedFromCapsule)
+        preservesFloatingDashboardPosition = false
         positionWindow(isExpanded: true, anchorFrame: anchorFrame)
+        preservesFloatingDashboardPosition = viewModel.isPresentedFromCapsule
+        window?.isMovableByWindowBackground = viewModel.isPresentedFromCapsule
         viewModel.isExpanded = true
         window?.makeKeyAndOrderFront(nil)
-        updateExpandedMouseTracking()
     }
 
-    private func handleHoverChanged(_ isHovered: Bool) {
-        collapseWorkItem?.cancel()
-        if isHovered {
-            // 悬停不再自动展开，避免同一个窗口在 resize 后被 enter/exit 事件拉进开合循环。
-            return
-        }
-        // 展开后的收起由鼠标位置轮询负责，避免窗口变形时的 mouseExited 把状态机拉进循环。
-        clearSuppressedHoverIfMouseLeftCollapsedEntry()
+    // 图钉仅影响当前悬浮面板生命周期，不持久化也不改变刘海模式。
+    private func toggleFloatingPanelPin() {
+        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule else { return }
+        viewModel.isPinned.toggle()
     }
 
-    // 收起后的 setFrame 可能触发一次合成 mouseExited，只有鼠标真的离开收起态入口时才恢复自动展开。
-    private func clearSuppressedHoverIfMouseLeftCollapsedEntry() {
-        guard suppressEntryHoverUntilExit, !isMouseInsideCollapsedEntry() else { return }
-        suppressEntryHoverUntilExit = false
+    // 关闭按钮是显式操作，即使面板已固定也立即收起并清除固定状态。
+    private func closeFloatingPanel() {
+        viewModel.isPinned = false
+        setExpanded(false)
     }
 
     // 收起态左键点击直接展开；展开后的列表点击继续交给 SwiftUI 处理。
@@ -412,52 +393,70 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    private func isMouseInsideWindow() -> Bool {
+    private func isMouseInsidePanelOrEntry() -> Bool {
         guard let window else { return false }
-        // 使用全局鼠标坐标和窗口 frame 对比，避免 SwiftUI 重绘期间的命中测试抖动。
         let mouseLocation = NSEvent.mouseLocation
         if window.frame.insetBy(dx: -2, dy: -2).contains(mouseLocation) {
             return true
         }
-        return viewModel.isExpanded && activeEntryAnchorFrame?.insetBy(dx: -2, dy: -2).contains(mouseLocation) == true
+        return externalEntryWindow?.frame.insetBy(dx: -2, dy: -2).contains(mouseLocation) == true
     }
 
-    private func setExpanded(_ isExpanded: Bool, tracksMouseExit: Bool = true) {
+    private func setExpanded(_ isExpanded: Bool) {
         guard viewModel.isExpanded != isExpanded else { return }
         // 展开先放大窗口再显示内容；收起先隐藏内容再缩小窗口，避免内容尺寸和窗口约束互相追赶。
         if isExpanded {
-            suppressEntryHoverUntilExit = false
-            tracksExpandedMouseExit = tracksMouseExit
             let anchorFrame = keepsCollapsedEntryVisible ? window?.frame : activeEntryAnchorFrame
             activeEntryAnchorFrame = anchorFrame
             viewModel.isPresentedFromCapsule = !keepsCollapsedEntryVisible
+            setFloatingDashboardResizable(viewModel.isPresentedFromCapsule)
+            preservesFloatingDashboardPosition = false
             positionWindow(isExpanded: true, anchorFrame: anchorFrame)
+            preservesFloatingDashboardPosition = viewModel.isPresentedFromCapsule
+            window?.isMovableByWindowBackground = viewModel.isPresentedFromCapsule
             viewModel.isExpanded = true
-            updateExpandedMouseTracking()
         } else {
-            stopExpandedMouseTracking()
+            viewModel.isPinned = false
+            setFloatingDashboardResizable(false)
+            // 面板收起后关闭背景拖拽，避免刘海入口被意外移动。
+            window?.isMovableByWindowBackground = false
             viewModel.isExpanded = false
+            viewModel.expandedScale = 1
             activeEntryAnchorFrame = nil
+            presentationScreen = nil
+            centersExpandedPanel = false
+            preservesFloatingDashboardPosition = false
             guard keepsCollapsedEntryVisible else {
                 window?.orderOut(nil)
                 return
             }
             positionWindow(isExpanded: false)
-            suppressEntryHoverUntilExit = isMouseInsideCollapsedEntry()
             window?.orderFrontRegardless()
         }
     }
 
     // 刘海入口右键菜单保留设置和退出，并新增切换到胶囊模式。
     private func showContextMenu(with event: NSEvent) {
-        collapseWorkItem?.cancel()
         guard let contentView = window?.contentView else { return }
         NSMenu.popUpContextMenu(contextMenu, with: event, for: contentView)
     }
 
+    // 只有悬浮 Dashboard 开启原生边缘缩放，刘海入口与普通展开面板保持固定尺寸。
+    private func setFloatingDashboardResizable(_ isResizable: Bool) {
+        guard let window else { return }
+        if isResizable {
+            window.styleMask.insert(.resizable)
+            window.minSize = FloatingDashboardSettings.minimumSize
+            window.maxSize = FloatingDashboardSettings.maximumSize
+        } else {
+            window.styleMask.remove(.resizable)
+            window.minSize = .zero
+        }
+    }
+
     private lazy var contextMenu: NSMenu = {
         let menu = NSMenu()
-        let switchItem = NSMenuItem(title: "切换到胶囊模式", action: #selector(handleToggleMode), keyEquivalent: "")
+        let switchItem = NSMenuItem(title: "切换到悬浮模式", action: #selector(handleToggleMode), keyEquivalent: "")
         switchItem.target = self
         let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
         settingsItem.target = self
@@ -485,63 +484,27 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     private func positionWindow(isExpanded: Bool, anchorFrame: CGRect? = nil) {
         guard let window else { return }
-        let screen = anchorFrame.flatMap { anchor in NSScreen.screens.first { $0.frame.contains(CGPoint(x: anchor.midX, y: anchor.midY)) } } ?? window.screen ?? NSScreen.main
+        // 悬浮 Dashboard 初始定位后保留用户坐标，不被状态刷新或错误提示重新居中。
+        guard !(isExpanded && viewModel.isPresentedFromCapsule && preservesFloatingDashboardPosition) else { return }
+        let screen = presentationScreen ?? anchorFrame.flatMap { anchor in NSScreen.screens.first { $0.frame.contains(CGPoint(x: anchor.midX, y: anchor.midY)) } } ?? window.screen ?? NSScreen.main
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: screen)
         if viewModel.collapsedHeight != collapsedSize.height {
             viewModel.collapsedHeight = collapsedSize.height
         }
-        let size = isExpanded ? NotchWindowMetrics.expandedSize(for: viewModel.state, collapsedHeight: collapsedSize.height, hasJumpError: viewModel.jumpError != nil) : collapsedSize
-        // 展开时跟随当前入口，收起时固定回到状态栏顶部居中。
-        let anchorGap = isExpanded && !keepsCollapsedEntryVisible ? NotchWindowMetrics.externalEntryPanelGap : 0
-        let origin = isExpanded ? NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame, includeAnchorArea: keepsCollapsedEntryVisible, anchorGap: anchorGap) : NotchWindowMetrics.origin(for: size, on: screen)
+        let isFloatingDashboard = isExpanded && viewModel.isPresentedFromCapsule
+        let size = isFloatingDashboard ? floatingDashboardSettings.size : (isExpanded ? NotchWindowMetrics.expandedSize(for: viewModel.state, collapsedHeight: collapsedSize.height, hasJumpError: viewModel.jumpError != nil, scale: viewModel.expandedScale) : collapsedSize)
+        let origin = isExpanded ? expandedOrigin(for: size, on: screen, anchorFrame: anchorFrame) : NotchWindowMetrics.origin(for: size, on: screen)
         let frame = CGRect(origin: origin, size: size)
         guard window.frame != frame else { return }
         window.setFrame(frame, display: true)
     }
 
-    // 展开态只用全局鼠标位置判断是否该收起，不再相信窗口变形过程中产生的 enter/exit 抖动事件。
-    private func updateExpandedMouseTracking() {
-        guard viewModel.isExpanded, tracksExpandedMouseExit else {
-            stopExpandedMouseTracking()
-            return
+    // 猫咪和全局快捷键居中显示；刘海入口继续从顶部锚点向下展开。
+    private func expandedOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?) -> CGPoint {
+        if centersExpandedPanel {
+            return NotchWindowMetrics.centeredPanelOrigin(for: size, on: screen)
         }
-        mouseLeftExpandedRegionAt = nil
-        guard mouseTrackingTimer == nil else { return }
-        mouseTrackingTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-            self?.checkExpandedMouseLocation()
-        }
-    }
-
-    // 鼠标连续离开面板和入口锚点超过收起延迟后，才真正收起面板。
-    private func checkExpandedMouseLocation() {
-        guard viewModel.isExpanded, tracksExpandedMouseExit else {
-            stopExpandedMouseTracking()
-            return
-        }
-        guard !isMouseInsideWindow() else {
-            mouseLeftExpandedRegionAt = nil
-            return
-        }
-        let now = Date()
-        let leftAt = mouseLeftExpandedRegionAt ?? now
-        mouseLeftExpandedRegionAt = leftAt
-        guard now.timeIntervalSince(leftAt) >= collapseDelay else { return }
-        setExpanded(false)
-    }
-
-    // 收起或隐藏时关闭轮询，避免旧 timer 在下一轮展开时带入过期状态。
-    private func stopExpandedMouseTracking() {
-        mouseTrackingTimer?.invalidate()
-        mouseTrackingTimer = nil
-        mouseLeftExpandedRegionAt = nil
-        tracksExpandedMouseExit = false
-    }
-
-    // 收起后如果鼠标仍压在入口上，先等真实离开再允许下一次自动展开，避免无鼠标移动时反复开合。
-    private func isMouseInsideCollapsedEntry() -> Bool {
-        guard keepsCollapsedEntryVisible, let window else { return false }
-        // 直接使用当前真实窗口 frame，避免顶部边界或多屏状态下重算 screen/origin 产生偏差。
-        return window.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        return NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame, includeAnchorArea: keepsCollapsedEntryVisible)
     }
 
     // 同时注册本地按键和系统热键；系统热键失败时，本地快捷键仍可在窗口聚焦时使用。
@@ -573,7 +536,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             guard status == noErr, pressedHotKeyID.signature == OSType(0x434E4458), pressedHotKeyID.id == 1 else { return noErr }
             let controller = Unmanaged<NotchWindowController>.fromOpaque(userData).takeUnretainedValue()
             DispatchQueue.main.async {
-                controller.revealForKeyboard()
+                controller.toggleForKeyboard()
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandlerRef)
@@ -622,7 +585,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 展开面板时接管方向键、回车和 Escape，其他按键继续交给系统处理。
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         if hotKeySettings.matches(event) {
-            revealForKeyboard()
+            toggleForKeyboard()
             return true
         }
         guard viewModel.isExpanded, window?.isKeyWindow == true else { return false }
