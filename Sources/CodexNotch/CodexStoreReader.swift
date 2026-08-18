@@ -77,6 +77,20 @@ final class CodexStoreReader {
         self.sessionTailLineLimit = sessionTailLineLimit
     }
 
+    // 首次展示只读取标题等 SQLite 元数据，不触碰会话日志和 Token 统计。
+    func loadTitleSnapshot() -> CodexStoreSnapshot {
+        let now = Date()
+        var sqliteErrors: [String] = []
+        var sessions = loadSQLiteSessionsFromAvailableDatabase(errors: &sqliteErrors, includeDetails: false)
+        var errors = sqliteErrors
+        if sessions.isEmpty {
+            var fallbackErrors: [String] = []
+            sessions = loadSessionIndexFallback(errors: &fallbackErrors, includeDetails: false)
+            errors = sessions.isEmpty ? sqliteErrors + fallbackErrors : fallbackErrors
+        }
+        return CodexStoreSnapshot(sessions: sessions, errors: errors, todayTokenUsage: .empty(dayStart: Calendar.current.startOfDay(for: now)), loadedAt: now)
+    }
+
     // 优先从 SQLite 读取未归档线程，失败或为空时退回 session_index.jsonl。
     func loadSnapshot() -> CodexStoreSnapshot {
         let now = Date()
@@ -100,13 +114,13 @@ final class CodexStoreReader {
     }
 
     // 从当前可用的 Codex SQLite 状态库读取，优先选择 threads 数据最新的库。
-    private func loadSQLiteSessionsFromAvailableDatabase(errors: inout [String]) -> [CodexSession] {
+    private func loadSQLiteSessionsFromAvailableDatabase(errors: inout [String], includeDetails: Bool = true) -> [CodexSession] {
         let databaseURLs = sqliteDatabaseURLs()
         selectedDatabaseURL = databaseURLs.first
         var collectedErrors: [String] = []
         for databaseURL in databaseURLs {
             var databaseErrors: [String] = []
-            let sessions = loadSQLiteSessions(databaseURL: databaseURL, errors: &databaseErrors)
+            let sessions = loadSQLiteSessions(databaseURL: databaseURL, errors: &databaseErrors, includeDetails: includeDetails)
             if !sessions.isEmpty {
                 selectedDatabaseURL = databaseURL
                 errors.append(contentsOf: databaseErrors)
@@ -198,7 +212,7 @@ final class CodexStoreReader {
         return Date(timeIntervalSince1970: seconds)
     }
 
-    private func loadSQLiteSessions(databaseURL: URL, errors: inout [String]) -> [CodexSession] {
+    private func loadSQLiteSessions(databaseURL: URL, errors: inout [String], includeDetails: Bool) -> [CodexSession] {
         var database: OpaquePointer?
         let openResult = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
         guard openResult == SQLITE_OK, let database else {
@@ -244,7 +258,7 @@ final class CodexStoreReader {
                 let title = preferredTitle(title: sqliteText(statement, index: 1), cwd: cwd, fallback: id)
                 let createdAt = dateFromSQLiteMilliseconds(statement: statement, index: 3)
                 let updatedAt = dateFromSQLiteMilliseconds(statement: statement, index: 4)
-                let summary = sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 5), errors: &errors)
+                let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 5), errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
                 sessions.append(CodexSession(id: id, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
             }
             stepResult = sqlite3_step(statement)
@@ -417,7 +431,7 @@ final class CodexStoreReader {
         return integer
     }
 
-    private func loadSessionIndexFallback(errors: inout [String]) -> [CodexSession] {
+    private func loadSessionIndexFallback(errors: inout [String], includeDetails: Bool = true) -> [CodexSession] {
         let indexURL = codexHome.appendingPathComponent("session_index.jsonl")
         let lines = tailLines(from: indexURL, maxLines: maxSessions * 3, errors: &errors)
         var sessions: [CodexSession] = []
@@ -429,7 +443,7 @@ final class CodexStoreReader {
             let cwd = object["cwd"] as? String ?? ""
             let title = preferredTitle(title: object["thread_name"] as? String, cwd: cwd, fallback: id)
             let updatedAt = isoDate((object["updated_at"] as? String) ?? "") ?? Date(timeIntervalSince1970: 0)
-            let summary = sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors)
+            let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
             sessions.append(CodexSession(id: id, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
         }
         if sessions.isEmpty {

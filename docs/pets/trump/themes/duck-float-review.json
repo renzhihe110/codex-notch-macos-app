@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "frames_root": "/private/tmp/codex-notch-trump-theme-duck/frames",
+  "states": [
+    "running"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18941,
+          "bbox": [
+            5,
+            15,
+            187,
+            193
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 7
+        },
+        {
+          "index": 1,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16145,
+          "bbox": [
+            5,
+            19,
+            187,
+            188
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 12
+        },
+        {
+          "index": 2,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15477,
+          "bbox": [
+            5,
+            24,
+            187,
+            183
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 7
+        },
+        {
+          "index": 3,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18531,
+          "bbox": [
+            5,
+            16,
+            187,
+            192
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 3
+        },
+        {
+          "index": 4,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17512,
+          "bbox": [
+            5,
+            17,
+            187,
+            191
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 11
+        },
+        {
+          "index": 5,
+          "file": "/private/tmp/codex-notch-trump-theme-duck/frames/running/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16432,
+          "bbox": [
+            5,
+            21,
+            187,
+            186
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 6
+        }
+      ]
+    }
+  ]
+}

@@ -28,7 +28,7 @@ enum CapsuleSize: String, CaseIterable, Identifiable {
         case .regular:
             return CGSize(width: 96, height: 96)
         case .large:
-            return CGSize(width: 112, height: 112)
+            return CGSize(width: 192, height: 192)
         }
     }
 }

@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "spriteVersionNumber": 2,
+  "run_dir": "/private/tmp/codex-notch-trump-v2",
+  "source_package": "/Users/renzhihe/.codex/pets/trump",
+  "spritesheet": "Sources/CodexNotch/Resources/Pets/Trump/spritesheet.webp",
+  "manifest": "Sources/CodexNotch/Resources/Pets/Trump/pet.json",
+  "validation": "docs/pets/trump/validation-extended.json",
+  "chroma_despill": "docs/pets/trump/chroma-despill-extended.json",
+  "contact_sheet": "docs/pets/trump/contact-sheet-extended.png",
+  "direction_sheet": "docs/pets/trump/look-directions.png",
+  "direction_semantics": "docs/pets/trump/direction-semantics.json",
+  "blind_direction_validation": "docs/pets/trump/direction-blind-validation.json",
+  "blind_review_resolution": "docs/pets/trump/blind-review-resolution.json",
+  "continuity": "docs/pets/trump/look-continuity.json",
+  "review": "docs/pets/trump/review.json",
+  "package": "Sources/CodexNotch/Resources/Pets/Trump",
+  "visual_qa": "pass"
+}

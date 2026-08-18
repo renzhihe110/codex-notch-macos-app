@@ -108,7 +108,7 @@ struct NotchView: View {
         model.isExpanded ? model.expandedScale : 1
     }
 
-    // 悬浮模式按用户保存的尺寸显示单列 Dashboard，不再绘制猫咪和面板之间的连接段。
+    // 悬浮模式按用户保存的尺寸显示单列 Dashboard，不再绘制宠物和面板之间的连接段。
     private var floatingDashboard: some View {
         floatingCard
             .frame(width: floatingDashboardSettings.size.width, height: floatingDashboardSettings.size.height)

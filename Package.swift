@@ -25,7 +25,7 @@ let package = Package(
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOWebSocket", package: "swift-nio")
             ],
-            // 将 DockCat 图片和许可证放进 SwiftPM 资源 bundle，运行时无需访问网络。
+            // 将内置 Trump v2 宠物包放进 SwiftPM 资源 bundle，运行时无需访问用户目录或网络。
             resources: [.process("Resources")],
             linkerSettings: [.linkedLibrary("sqlite3")]
         )

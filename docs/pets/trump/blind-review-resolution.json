@@ -1,0 +1,11 @@
+{
+  "decision": "accept",
+  "severity": "minor",
+  "reviewed_by": "parent",
+  "failed_checks": [
+    "intermediate horizontal ambiguity at 112.5, 135, 157.5, and 202.5",
+    "intermediate vertical ambiguity at 045, 067.5, 225, 247.5, 292.5, and 315",
+    "continuity metric warnings at 157.5->180 and 337.5->000"
+  ],
+  "evidence": "All four cardinal hard gates passed strict three-reviewer majority. Independent labeled normal-size review places every intermediate pose in its intended quadrant with no reversal. The continuity metric outliers come from head and face silhouette changes; torso scale, feet, baseline, identity, hair, suit, and tie remain visually continuous, with no conspicuous snap or scale pop."
+}

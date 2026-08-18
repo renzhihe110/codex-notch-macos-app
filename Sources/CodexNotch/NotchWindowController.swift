@@ -290,7 +290,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 窗口失焦时收起；外部点击由独立鼠标监听兜底。
     func windowDidResignKey(_ notification: Notification) {
         guard !viewModel.isPinned else { return }
-        // 点击猫咪时先保留面板，随后由猫咪的 mouseUp 执行显式 toggle。
+        // 点击宠物时先保留面板，随后由宠物的 mouseUp 执行显式 toggle。
         guard !isMouseInsidePanelOrEntry() else { return }
         setExpanded(false)
     }
@@ -336,12 +336,12 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         setExpanded(false)
     }
 
-    // 记录猫咪窗口，仅用于外部点击排除，不参与 Dashboard 定位。
+    // 记录宠物窗口，仅用于外部点击排除，不参与 Dashboard 定位。
     func setExternalEntryWindow(_ entryWindow: NSWindow) {
         externalEntryWindow = entryWindow
     }
 
-    // 猫咪单击显式切换正常尺寸 Dashboard，并在猫咪所在屏幕居中显示。
+    // 宠物单击显式切换正常尺寸 Dashboard，并在宠物所在屏幕居中显示。
     func toggleFromStatusItem(entryFrame: CGRect) {
         keepsCollapsedEntryVisible = false
         if viewModel.isExpanded, viewModel.isPresentedFromCapsule {
@@ -499,7 +499,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(frame, display: true)
     }
 
-    // 猫咪和全局快捷键居中显示；刘海入口继续从顶部锚点向下展开。
+    // 宠物和全局快捷键居中显示；刘海入口继续从顶部锚点向下展开。
     private func expandedOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?) -> CGPoint {
         if centersExpandedPanel {
             return NotchWindowMetrics.centeredPanelOrigin(for: size, on: screen)

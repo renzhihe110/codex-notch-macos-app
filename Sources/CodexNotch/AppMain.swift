@@ -16,6 +16,8 @@ struct CodexNotchApp: App {
 // 启动时创建刘海窗口，并每 1 秒从 Codex 本地状态刷新一次。
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let reader = CodexStoreReader()
+    // 所有 Codex 日志读取都在同一后台队列执行，避免首次大文件扫描阻塞宠物首帧或并发访问游标。
+    private let refreshQueue = DispatchQueue(label: "local.codex.notch.refresh", qos: .utility)
     private let jumpRouter = JumpRouter()
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
@@ -30,7 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     })
     private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, pairingStore: pairingStore, lanStatusServer: lanStatusServer)
     private var refreshTimer: Timer?
-    private var displayMode: EntryDisplayMode = .notchCentered
+    private var isRefreshInFlight = false
+    private var hasLoadedInitialSnapshot = false
+    private var displayMode: EntryDisplayMode = .capsule
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -57,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.toggleDisplayMode()
         })
         statusBarItemController = statusController
-        // 排除猫咪自身点击的外部收起事件，确保第二次单击可以稳定关闭 Dashboard。
+        // 排除宠物自身点击的外部收起事件，确保第二次单击可以稳定关闭 Dashboard。
         notchWindowController?.setExternalEntryWindow(statusController.entryWindow)
         applyDisplayMode()
         refreshStatus()
@@ -75,8 +79,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    // 后台读取尚未结束时合并后续刷新，避免每秒定时器堆积相同的大文件扫描。
     private func refreshStatus() {
-        let snapshot = reader.loadSnapshot()
+        guard !isRefreshInFlight else { return }
+        isRefreshInFlight = true
+        let shouldLoadTitlePreview = !hasLoadedInitialSnapshot
+        refreshQueue.async { [weak self] in
+            guard let self else { return }
+            if shouldLoadTitlePreview {
+                let titleSnapshot = self.reader.loadTitleSnapshot()
+                DispatchQueue.main.async { [weak self] in self?.applyTitlePreview(snapshot: titleSnapshot) }
+            }
+            let snapshot = self.reader.loadSnapshot()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isRefreshInFlight = false
+                self.hasLoadedInitialSnapshot = true
+                self.apply(snapshot: snapshot)
+            }
+        }
+    }
+
+    // 标题预览只刷新可见内容，完整状态到达前不发送通知或完成事件。
+    private func applyTitlePreview(snapshot: CodexStoreSnapshot) {
+        let state = StatusMapper.map(snapshot: snapshot)
+        notchWindowController?.update(state: state)
+        statusBarItemController?.update(state: state)
+    }
+
+    // 状态读取完成后统一回到主线程更新窗口、通知和局域网快照。
+    private func apply(snapshot: CodexStoreSnapshot) {
         let state = StatusMapper.map(snapshot: snapshot)
         notchWindowController?.update(state: state)
         statusBarItemController?.update(state: state)
@@ -140,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-// 运行期入口展示模式不持久化，启动始终回到刘海居中。
+// 运行期入口展示模式不持久化，启动始终直接显示内置悬浮宠物。
 private enum EntryDisplayMode {
     case notchCentered
     case capsule

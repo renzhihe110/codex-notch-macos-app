@@ -9,17 +9,20 @@ final class StatusBarItemController: NSObject {
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
     private let capsuleSettings: CapsuleSettings
-    private let restingImage: NSImage
-    private let standingImage: NSImage
-    private let walkingImages: [NSImage]
+    private let pet: CodexPet
+    private let petThemeSettings = CodexPetThemeSettings.shared
     private var state: NotchState
     private var animationTimer: Timer?
     private var carouselTimer: Timer?
     private var capsuleSettingsObserver: NSObjectProtocol?
-    private var displayedStatus: SessionStatus?
-    private var walkingFrameIndex = 0
+    private var displayedPose: CodexPetPose?
+    private var interactionPose: CodexPetPose?
+    private var dragPose: CodexPetPose = .runningRight
+    private var lookDirection: Int?
+    private var animationFrameIndex = 0
     private var carouselIndex = 0
     private var isEntryVisible = false
+    private var isHovered = false
     private var hasPositionedForCurrentShow = false
     private var dragStartMouseLocation: CGPoint?
     private var dragStartWindowOrigin: CGPoint?
@@ -29,16 +32,13 @@ final class StatusBarItemController: NSObject {
 
     init(initialState: NotchState, capsuleSettings: CapsuleSettings, onActivate: @escaping (CGRect) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         let initialPillSize = capsuleSettings.size.dimensions
-        let dockCatAssets = DockCatAssets.load()
         self.state = initialState
         self.onActivate = onActivate
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
         self.capsuleSettings = capsuleSettings
-        self.restingImage = dockCatAssets.resting
-        self.standingImage = dockCatAssets.standing
-        self.walkingImages = dockCatAssets.walking
+        self.pet = CodexPet.loadBundled()
         self.pillSize = initialPillSize
         self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: initialPillSize))
         self.window = NSWindow(contentRect: CGRect(origin: .zero, size: initialPillSize), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -50,7 +50,7 @@ final class StatusBarItemController: NSObject {
         update(state: initialState)
     }
 
-    // Dashboard 控制器只用这个窗口排除猫咪自身点击，不读取其位置做面板定位。
+    // Dashboard 控制器只用这个窗口排除宠物自身点击，不读取其位置做面板定位。
     var entryWindow: NSWindow { window }
 
     deinit {
@@ -61,12 +61,11 @@ final class StatusBarItemController: NSObject {
         }
     }
 
-    // 刷新猫咪状态并按黄色聚合状态启停逐帧动画；刷新不会改动用户拖动后的位置。
+    // 刷新宠物后台状态；交互动作完成后会自然恢复到这里的最新状态。
     func update(state: NotchState) {
         self.state = state
         normalizeCarouselIndex()
-        updateAnimationState()
-        updatePillView()
+        refreshPetAnimation()
         guard isEntryVisible else { return }
         window.displayIfNeeded()
     }
@@ -78,8 +77,7 @@ final class StatusBarItemController: NSObject {
             positionWindowAtDefault()
             hasPositionedForCurrentShow = true
         }
-        updateAnimationState()
-        updatePillView()
+        refreshPetAnimation()
         window.orderFrontRegardless()
     }
 
@@ -89,13 +87,17 @@ final class StatusBarItemController: NSObject {
         dragStartMouseLocation = nil
         dragStartWindowOrigin = nil
         didDrag = false
-        stopWalkingAnimation()
+        isHovered = false
+        lookDirection = nil
+        interactionPose = nil
+        displayedPose = nil
+        stopPetAnimation()
         pillView.isHighlighted = false
         pillView.needsDisplay = true
         window.orderOut(nil)
     }
 
-    // 猫咪入口窗口保持透明背景，不额外绘制底色、光环或系统阴影。
+    // 宠物入口窗口保持透明背景，不额外绘制底色、光环或系统阴影。
     private func configureWindow() {
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -104,6 +106,7 @@ final class StatusBarItemController: NSObject {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.contentView = pillView
         window.ignoresMouseEvents = false
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
     }
@@ -114,6 +117,10 @@ final class StatusBarItemController: NSObject {
         pillView.onMouseDragged = { [weak self] event in self?.continueDrag(with: event) }
         pillView.onMouseUp = { [weak self] event in self?.endDrag(with: event) }
         pillView.onRightClick = { [weak self] event in self?.showContextMenu(with: event) }
+        pillView.onMouseEntered = { [weak self] event in self?.mouseEntered(with: event) }
+        pillView.onMouseMoved = { [weak self] event in self?.mouseMoved(with: event) }
+        pillView.onMouseExited = { [weak self] event in self?.mouseExited(with: event) }
+        pillView.onScrollWheel = { [weak self] event in self?.resizePet(with: event) }
     }
 
     // 监听设置页尺寸变更，保持悬浮球窗口和展开面板锚点同步更新。
@@ -130,46 +137,91 @@ final class StatusBarItemController: NSObject {
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self, self.carouselSessions.count > 1 else { return }
             self.carouselIndex = (self.carouselIndex + 1) % self.carouselSessions.count
-            self.updatePillView()
+            self.pillView.toolTip = self.tooltipText
         }
     }
 
-    // 黄色状态以 DockCat 默认 3fps 顺序循环四帧，绿色和红色只保留静态图片。
-    private func updateAnimationState() {
-        let statusChanged = displayedStatus != state.aggregateStatus
-        displayedStatus = state.aggregateStatus
-        if statusChanged {
-            walkingFrameIndex = 0
-        }
-        guard isEntryVisible, state.aggregateStatus == .yellow else {
-            stopWalkingAnimation()
-            return
-        }
-        guard animationTimer == nil else { return }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 3.0, repeats: true) { [weak self] _ in
-            guard let self, !self.walkingImages.isEmpty else { return }
-            self.walkingFrameIndex = (self.walkingFrameIndex + 1) % self.walkingImages.count
-            self.updatePillView()
-        }
-    }
-
-    // 离开黄色状态或隐藏入口时立即停止动画，避免后台无效唤醒。
-    private func stopWalkingAnimation() {
+    // 隐藏入口时停止唯一的宠物逐帧计时器，tooltip 轮播计时器保持原生命周期。
+    private func stopPetAnimation() {
         animationTimer?.invalidate()
         animationTimer = nil
     }
 
-    // 按聚合状态同步猫咪帧和悬浮提示。
-    private func updatePillView() {
-        switch displayedStatus ?? state.aggregateStatus {
-        case .red:
-            pillView.image = standingImage
-        case .yellow:
-            pillView.image = walkingImages[walkingFrameIndex % walkingImages.count]
-        case .green:
-            pillView.image = restingImage
+    // 按交互优先级选择动作；后台繁忙状态优先于仅用于空闲时的鼠标观察方向。
+    private var effectivePose: CodexPetPose {
+        if didDrag { return dragPose }
+        if let interactionPose { return interactionPose }
+        let statusPose = basePose
+        if statusPose != .idle { return statusPose }
+        if let lookDirection { return .look(lookDirection) }
+        return .idle
+    }
+
+    // 将现有红黄绿状态细分为 v2 的失败、等待、运行和空闲四种后台动作。
+    private var basePose: CodexPetPose {
+        if (state.errorMessage != nil && state.sessions.isEmpty) || state.sessions.contains(where: { $0.status == .red && $0.attention == nil }) { return .failed }
+        if state.sessions.contains(where: { $0.attention == .waitingInput || $0.attention == .stalled }) { return .waiting }
+        if state.aggregateStatus == .yellow { return .running }
+        return .idle
+    }
+
+    // 动作改变时从首帧开始；同一动作只更新 tooltip，不制造第二个计时器。
+    private func refreshPetAnimation() {
+        guard isEntryVisible else {
+            stopPetAnimation()
+            pillView.toolTip = tooltipText
+            return
+        }
+        let nextPose = effectivePose
+        if displayedPose != nextPose {
+            displayedPose = nextPose
+            animationFrameIndex = 0
+            renderPetFrameAndScheduleNext()
+            return
         }
         pillView.toolTip = tooltipText
+    }
+
+    // 根据每帧时长使用 common mode 单次调度，保证拖动和菜单跟踪期间动画仍可刷新。
+    private func renderPetFrameAndScheduleNext() {
+        stopPetAnimation()
+        guard isEntryVisible, let displayedPose else { return }
+        let frames = pet.frames(for: displayedPose, theme: petThemeSettings.theme)
+        animationFrameIndex = min(animationFrameIndex, frames.count - 1)
+        pillView.image = frames[animationFrameIndex]
+        pillView.toolTip = tooltipText
+        guard frames.count > 1 else { return }
+        let durations = displayedPose.frameDurations
+        let duration = durations[min(animationFrameIndex, durations.count - 1)]
+        let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in self?.advancePetFrame() }
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    // 循环动作回到首帧；挥手和跳跃只播一轮，然后恢复最新有效动作。
+    private func advancePetFrame() {
+        guard let displayedPose else { return }
+        let frames = pet.frames(for: displayedPose, theme: petThemeSettings.theme)
+        if animationFrameIndex + 1 < frames.count {
+            animationFrameIndex += 1
+            renderPetFrameAndScheduleNext()
+            return
+        }
+        if displayedPose.isOneShot, interactionPose == displayedPose {
+            interactionPose = nil
+            self.displayedPose = nil
+            refreshPetAnimation()
+            return
+        }
+        animationFrameIndex = 0
+        renderPetFrameAndScheduleNext()
+    }
+
+    // 启动一次性交互动作，并覆盖尚未完成的上一次一次性动作。
+    private func beginOneShot(_ pose: CodexPetPose) {
+        interactionPose = pose
+        displayedPose = nil
+        refreshPetAnimation()
     }
 
     // 尺寸切换时围绕当前中心缩放，避免设置页操作让胶囊突然跳到别处。
@@ -181,6 +233,14 @@ final class StatusBarItemController: NSObject {
         window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
         guard isEntryVisible else { return }
         window.orderFrontRegardless()
+    }
+
+    // 滚轮在现有三档尺寸间切换，并复用设置对象保存用户选择。
+    private func resizePet(with event: NSEvent) {
+        guard event.scrollingDeltaY != 0, let currentIndex = CapsuleSize.allCases.firstIndex(of: capsuleSettings.size) else { return }
+        let step = event.scrollingDeltaY > 0 ? 1 : -1
+        let targetIndex = min(max(currentIndex + step, CapsuleSize.allCases.startIndex), CapsuleSize.allCases.index(before: CapsuleSize.allCases.endIndex))
+        capsuleSettings.select(size: CapsuleSize.allCases[targetIndex])
     }
 
     // 默认位置放在主屏顶部可见区域，后续完全交给用户拖动。
@@ -208,8 +268,12 @@ final class StatusBarItemController: NSObject {
         let delta = CGSize(width: currentLocation.x - dragStartMouseLocation.x, height: currentLocation.y - dragStartMouseLocation.y)
         if !didDrag, hypot(delta.width, delta.height) > dragThreshold {
             didDrag = true
+            interactionPose = nil
+            displayedPose = nil
         }
         guard didDrag else { return }
+        if abs(delta.width) > dragThreshold / 2 { dragPose = delta.width < 0 ? .runningLeft : .runningRight }
+        refreshPetAnimation()
         window.setFrameOrigin(CGPoint(x: dragStartWindowOrigin.x + delta.width, y: dragStartWindowOrigin.y + delta.height))
     }
 
@@ -221,32 +285,105 @@ final class StatusBarItemController: NSObject {
         didDrag = false
         pillView.isHighlighted = false
         pillView.needsDisplay = true
-        guard shouldActivate else { return }
+        displayedPose = nil
+        if !shouldActivate {
+            refreshPetAnimation()
+            return
+        }
+        beginOneShot(.jumping)
         onActivate(window.frame)
     }
 
-    // 悬浮球右键菜单保留原有设置和退出，并新增切回刘海居中模式。
+    // 右键菜单显示期间循环 review，菜单关闭后恢复最新后台或观察动作。
     private func showContextMenu(with event: NSEvent) {
         pillView.isHighlighted = false
         pillView.needsDisplay = true
+        interactionPose = .review
+        displayedPose = nil
+        refreshPetAnimation()
+        updateThemeMenuState()
         NSMenu.popUpContextMenu(contextMenu, with: event, for: pillView)
+        if interactionPose == .review { interactionPose = nil }
+        displayedPose = nil
+        refreshPetAnimation()
+    }
+
+    // 鼠标进入先完整播放一轮挥手，期间仍记录后续观察方向。
+    private func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateLookDirection(with: event)
+        beginOneShot(.waving)
+    }
+
+    // 空闲悬停时将 AppKit 向上的坐标系量化为从正上方开始顺时针的 16 个方向。
+    private func mouseMoved(with event: NSEvent) {
+        guard isHovered else { return }
+        updateLookDirection(with: event)
+        refreshPetAnimation()
+    }
+
+    // 鼠标移出只清除观察方向；已经开始的一次性动作仍会正常播完。
+    private func mouseExited(with event: NSEvent) {
+        isHovered = false
+        lookDirection = nil
+        refreshPetAnimation()
+    }
+
+    // 中心死区使用 idle，外围按每 22.5° 就近取一个方向格。
+    private func updateLookDirection(with event: NSEvent) {
+        let point = pillView.convert(event.locationInWindow, from: nil)
+        let dx = point.x - pillView.bounds.midX
+        let dy = point.y - pillView.bounds.midY
+        let deadZone = min(pillView.bounds.width, pillView.bounds.height) * 0.12
+        guard hypot(dx, dy) >= deadZone else {
+            lookDirection = nil
+            return
+        }
+        let clockwiseDegrees = atan2(dx, dy) * 180 / .pi
+        let normalizedDegrees = clockwiseDegrees < 0 ? clockwiseDegrees + 360 : clockwiseDegrees
+        lookDirection = Int((normalizedDegrees / 22.5).rounded()) % 16
     }
 
     private lazy var contextMenu: NSMenu = {
         let menu = NSMenu()
         let switchItem = NSMenuItem(title: "切换到刘海居中模式", action: #selector(handleToggleMode), keyEquivalent: "")
         switchItem.target = self
+        let themeItem = NSMenuItem(title: "宠物主题", action: nil, keyEquivalent: "")
+        let themeMenu = NSMenu(title: "宠物主题")
+        for theme in CodexPetTheme.allCases {
+            let item = NSMenuItem(title: theme.displayName, action: #selector(handleSelectTheme(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = theme.rawValue
+            themeMenu.addItem(item)
+        }
+        themeItem.submenu = themeMenu
         let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
         settingsItem.target = self
         let quitItem = NSMenuItem(title: "退出 Codex Notch", action: #selector(handleQuit), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(switchItem)
         menu.addItem(.separator())
+        menu.addItem(themeItem)
+        menu.addItem(.separator())
         menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(quitItem)
         return menu
     }()
+
+    // 菜单弹出前同步持久化选择，确保当前主题始终只有一个勾选项。
+    private func updateThemeMenuState() {
+        guard let themeItems = contextMenu.items.first(where: { $0.title == "宠物主题" })?.submenu?.items else { return }
+        for item in themeItems { item.state = item.representedObject as? String == petThemeSettings.theme.rawValue ? .on : .off }
+    }
+
+    // 切换主题后立即从运行动作首帧刷新；非运行状态保持当前动作不变。
+    @objc private func handleSelectTheme(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String, let theme = CodexPetTheme(rawValue: rawValue) else { return }
+        petThemeSettings.select(theme: theme)
+        displayedPose = nil
+        refreshPetAnimation()
+    }
 
     @objc private func handleToggleMode() {
         onToggleMode()
@@ -304,31 +441,46 @@ final class StatusBarItemController: NSObject {
     }
 }
 
-// 从 SwiftPM 资源包加载固定版本的 DockCat 素材，缺失时立即暴露打包错误。
-private struct DockCatAssets {
-    let resting: NSImage
-    let standing: NSImage
-    let walking: [NSImage]
-
-    static func load() -> DockCatAssets {
-        DockCatAssets(resting: loadImage(named: "loaf"), standing: loadImage(named: "stand"), walking: (1...4).map { loadImage(named: String(format: "walk_%02d", $0)) })
-    }
-
-    private static func loadImage(named name: String) -> NSImage {
-        guard let url = Bundle.module.url(forResource: name, withExtension: "png"), let image = NSImage(contentsOf: url) else {
-            preconditionFailure("缺少 DockCat 资源：\(name).png")
-        }
-        return image
-    }
-}
-
-// 猫咪入口只绘制透明 PNG，并保留原有点击、拖动和右键事件。
+// 宠物入口绘制透明 v2 帧，并负责发送点击、拖动、右键和悬停事件。
 private final class StatusPillView: NSControl {
     var image: NSImage? { didSet { if oldValue !== image { needsDisplay = true } } }
     var onMouseDown: ((NSEvent) -> Void)?
     var onMouseDragged: ((NSEvent) -> Void)?
     var onMouseUp: ((NSEvent) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
+    var onMouseEntered: ((NSEvent) -> Void)?
+    var onMouseMoved: ((NSEvent) -> Void)?
+    var onMouseExited: ((NSEvent) -> Void)?
+    var onScrollWheel: ((NSEvent) -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    // 跟踪区域随三档尺寸自动更新，并在非活跃窗口中继续接收悬停事件。
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect]
+        let trackingArea = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    // 将悬停事件交给控制器决定挥手和观察方向。
+    override func mouseEntered(with event: NSEvent) {
+        onMouseEntered?(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onMouseMoved?(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onMouseExited?(event)
+    }
+
+    // 将滚轮缩放交给控制器，以便窗口尺寸和持久化设置保持同步。
+    override func scrollWheel(with event: NSEvent) {
+        onScrollWheel?(event)
+    }
 
     // 左键按下只记录状态，真正点击动作在 mouseUp 中按拖动阈值判断。
     override func mouseDown(with event: NSEvent) {
