@@ -9,7 +9,7 @@ final class GitHubUpdateChecker: ObservableObject {
     @Published private(set) var isChecking = false
     @Published private(set) var statusMessage = "通过 GitHub Releases 检查公开版本。"
     @Published private(set) var latestReleaseURL: URL?
-    let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+    let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.2"
 
     // 手动检查期间禁用重复请求，并把网络和版本格式错误收敛成设置页可读状态。
     func checkForUpdates() {

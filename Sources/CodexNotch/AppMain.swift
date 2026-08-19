@@ -8,7 +8,14 @@ struct CodexNotchApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared, completionPopupSettings: CompletionPopupSettings.shared, petCatalog: CodexPetCatalog.shared, pairingStore: PairingStore.shared, lanStatusServer: LANStatusServer.shared)
+            EmptyView()
+        }
+        .commands {
+            // 系统“设置…”命令复用自建窗口，避免 SwiftUI 额外创建带原生标题栏的第二个设置窗口。
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") { appDelegate.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
@@ -24,14 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let capsuleSettings = CapsuleSettings.shared
     private let completionPopupSettings = CompletionPopupSettings.shared
     private let petCatalog = CodexPetCatalog.shared
-    private let pairingStore = PairingStore.shared
-    private let lanStatusServer = LANStatusServer.shared
     private var notchWindowController: NotchWindowController?
     private var statusBarItemController: StatusBarItemController?
     private lazy var completionPopupController = CompletionPopupController(settings: completionPopupSettings, onOpenSession: { [weak self] session in
         self?.jump(to: session)
     })
-    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog, pairingStore: pairingStore, lanStatusServer: lanStatusServer)
+    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog)
     private var refreshTimer: Timer?
     private var isRefreshInFlight = false
     private var hasLoadedInitialSnapshot = false
@@ -40,7 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         alertNotifier.requestAuthorization()
-        lanStatusServer.start(pairingStore: pairingStore)
         let initialState = StatusMapper.map(sessions: [], now: Date())
         let controller = NotchWindowController(initialState: initialState, hotKeySettings: hotKeySettings, onSelectSession: { [weak self] session in
             self?.jump(to: session)
@@ -73,7 +77,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
-        lanStatusServer.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -108,12 +111,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarItemController?.update(state: state)
     }
 
-    // 状态读取完成后统一回到主线程更新窗口、通知和局域网快照。
+    // 状态读取完成后统一回到主线程更新窗口和通知。
     private func apply(snapshot: CodexStoreSnapshot) {
         let state = StatusMapper.map(snapshot: snapshot)
         notchWindowController?.update(state: state)
         statusBarItemController?.update(state: state)
-        lanStatusServer.broadcast(snapshot: LANStatusSnapshotMapper.snapshot(from: state))
         alertNotifier.notifyIfNeeded(for: state.sessions)
         // 首次读取失败且没有会话时不建立完成基线，避免恢复读取后误弹历史完成任务。
         if !snapshot.sessions.isEmpty || snapshot.errors.isEmpty {
@@ -151,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // 从右键菜单直接打开设置窗口，避免 accessory app 没有 Settings responder 时点击无反应。
-    private func openSettings() {
+    func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindowController.show()
     }
@@ -181,13 +183,25 @@ private enum EntryDisplayMode {
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
 private final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, petCatalog: CodexPetCatalog, pairingStore: PairingStore, lanStatusServer: LANStatusServer) {
-        // 设置页新增目录颜色取色盘后扩展窗口高度，避免局域网配置被裁切。
-        let contentSize = CGSize(width: 520, height: 625)
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, petCatalog: CodexPetCatalog) {
+        // 使用 UI 稿对应的高窄比例和沉浸式标题栏，较小屏幕仍可通过内容滚动访问全部设置。
+        let contentSize = CGSize(width: 470, height: 838)
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Codex Notch 设置"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(srgbRed: 0.035, green: 0.055, blue: 0.071, alpha: 1)
+        window.isMovableByWindowBackground = true
+        window.contentMinSize = CGSize(width: 450, height: 640)
+        window.contentMaxSize = CGSize(width: 560, height: 900)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog, pairingStore: pairingStore, lanStatusServer: lanStatusServer))
+        // 隐藏原生交通灯，由内容视图中的自定义按钮提供同等窗口操作。
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog))
         super.init(window: window)
         window.delegate = self
     }

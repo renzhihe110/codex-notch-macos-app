@@ -51,6 +51,13 @@ final class HotKeySettings: ObservableObject {
         validationMessage = nil
     }
 
+    // 设置页取消编辑时恢复打开页面前的快捷键，并重新通知全局注册器应用旧值。
+    func restore(hotKey restoredHotKey: HotKey) {
+        guard hotKey != restoredHotKey else { return }
+        save(restoredHotKey)
+        validationMessage = nil
+    }
+
     // 全局注册失败时恢复到上一条已生效配置，避免设置页展示和实际热键不一致。
     func restoreAfterRegistrationFailure(_ restoredHotKey: HotKey) {
         hotKey = restoredHotKey

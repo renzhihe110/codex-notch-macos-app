@@ -31,12 +31,6 @@
 
 打包脚本会同时复制 SwiftPM 资源 bundle，其中包含从本机 Codex 自定义宠物升级得到的 Trump v2 宠物包；运行时还会只读扫描 `~/.codex/pets` 中可选的外部 v2 宠物。
 
-## iOS 局域网伴侣 App
-
-第一版 iOS 伴侣 App 使用 `iOS/project.yml` 管理 Xcode 工程。安装 XcodeGen 后，在 `iOS/` 目录执行 `xcodegen generate` 可生成本地 `CodexNotchIOS.xcodeproj`；生成的 `.xcodeproj` 不提交到仓库。
-
-macOS 设置页会显示局域网 iOS 连接二维码、地址、端口和 token。iPhone 端扫码后保存 Mac 地址和 token，前台通过 WebSocket 实时订阅状态，并在 App 内刘海屏和 Live Activity / Dynamic Island 展示运行中的 Codex 任务。第一版只保证 iOS App 前台或打开时实时同步，不接入 APNs，不承诺 App 被杀后的可靠提醒。
-
 ## 界面行为
 
 - 应用以 accessory 模式运行，不展示 Dock 图标，并支持刘海居中与可拖动悬浮宠物两种入口模式；启动默认直接显示悬浮宠物。
@@ -66,7 +60,6 @@ macOS 设置页会显示局域网 iOS 连接二维码、地址、端口和 token
 - 应用不修改、不注入、不 patch Codex App。
 - 应用不上传本地 Codex 数据，所有读取和展示都限定在本机。
 - 本地通知只使用会话标题、工作目录名、状态关键词和活动时间，不展示用户正文、助手正文或完整对话内容。
-- 局域网 iOS payload 只发送展示字段，包括会话 id、标题、项目名、状态、注意力原因和更新时间，不发送完整工作目录、用户正文、助手正文、工具输出或 jsonl 原始事件。
 
 ## 第三方素材与许可
 
