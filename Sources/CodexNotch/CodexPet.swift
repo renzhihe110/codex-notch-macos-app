@@ -75,6 +75,13 @@ final class CodexPet {
     private var themedFrameCache: [CodexPetTheme: [CodexPetPose: [NSImage]]] = [:]
     private let cellSize = CGSize(width: 192, height: 208)
 
+    // App bundle 使用标准 Contents/Resources 路径，SwiftPM 命令行运行时回退生成的 Bundle.module。
+    private static let bundledResources: Bundle = {
+        let appResourceBundleURL = Bundle.main.resourceURL?.appendingPathComponent("CodexNotch_CodexNotch.bundle")
+        if let appResourceBundleURL, let appResourceBundle = Bundle(url: appResourceBundleURL) { return appResourceBundle }
+        return Bundle.module
+    }()
+
     private init(manifest: CodexPetManifest, atlas: CGImage) {
         self.manifest = manifest
         self.atlas = atlas
@@ -93,7 +100,7 @@ final class CodexPet {
 
     // SwiftPM 处理资源时可能展平目录，因此同时接受源码子目录和 bundle 根目录中的固定文件名。
     private static func bundledURL(named name: String, fileExtension: String) -> URL? {
-        Bundle.module.url(forResource: name, withExtension: fileExtension, subdirectory: "Pets/Trump") ?? Bundle.module.url(forResource: name, withExtension: fileExtension)
+        bundledResources.url(forResource: name, withExtension: fileExtension, subdirectory: "Pets/Trump") ?? bundledResources.url(forResource: name, withExtension: fileExtension)
     }
 
     // 按图集顶端起算的行列裁切帧，避免每次刷新悬浮窗都重复解码 WebP。
@@ -146,6 +153,6 @@ final class CodexPet {
 
     // SwiftPM 可能展平资源目录，因此主题资源同时接受源码子目录和 bundle 根目录。
     private static func bundledThemeURL(named name: String, fileExtension: String) -> URL? {
-        Bundle.module.url(forResource: name, withExtension: fileExtension, subdirectory: "Pets/Trump/Themes") ?? Bundle.module.url(forResource: name, withExtension: fileExtension)
+        bundledResources.url(forResource: name, withExtension: fileExtension, subdirectory: "Pets/Trump/Themes") ?? bundledResources.url(forResource: name, withExtension: fileExtension)
     }
 }
