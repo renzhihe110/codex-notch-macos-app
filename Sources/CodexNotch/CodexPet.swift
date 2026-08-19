@@ -1,12 +1,46 @@
 import AppKit
 
-// 描述当前 App 固定内置的 Codex v2 宠物资源，不扩展为外部宠物管理器。
+// 描述内置与外部 Codex v2 宠物共用的资源清单。
 struct CodexPetManifest: Codable {
     let id: String
     let displayName: String
     let description: String
-    let spriteVersionNumber: Int
+    let spriteVersionNumber: Int?
     let spritesheetPath: String
+}
+
+// 保存一个已经通过 v2 契约校验的外部宠物包信息，供目录模型稳定排序和持久化选择。
+struct CodexPetPackage: Hashable {
+    let id: String
+    let displayName: String
+    let directoryName: String
+}
+
+// 将外部包失败收敛为设置页可读的短原因，避免无效用户资源触发 preconditionFailure。
+private enum CodexPetPackageError: LocalizedError {
+    case missingManifest
+    case invalidManifest
+    case mismatchedID(expected: String, actual: String)
+    case emptyDisplayName
+    case unsupportedVersion(Int)
+    case invalidSpritesheetPath
+    case unsupportedSpritesheetFormat(String)
+    case unreadableSpritesheet
+    case invalidSpritesheetSize(width: Int, height: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingManifest: return "缺少或无法读取 pet.json"
+        case .invalidManifest: return "pet.json 格式无效"
+        case .mismatchedID(let expected, let actual): return "目录名 \(expected) 与宠物 ID \(actual) 不一致"
+        case .emptyDisplayName: return "displayName 不能为空"
+        case .unsupportedVersion(let version): return "仅支持 v2，当前为 v\(version)"
+        case .invalidSpritesheetPath: return "图集路径为空、越界或使用了绝对路径"
+        case .unsupportedSpritesheetFormat(let fileExtension): return "不支持 .\(fileExtension) 图集，仅支持 PNG 或 WebP"
+        case .unreadableSpritesheet: return "图集缺失或无法解析"
+        case .invalidSpritesheetSize(let width, let height): return "图集尺寸为 \(width)×\(height)，必须为 1536×2288"
+        }
+    }
 }
 
 // 统一声明标准动作和 16 个观察方向在 v2 图集中的位置与时长。
@@ -98,9 +132,39 @@ final class CodexPet {
         return CodexPet(manifest: manifest, atlas: atlas)
     }
 
+    // 从用户宠物目录读取并完整校验 v2 包，只有成功结果才会进入可选宠物列表。
+    static func loadExternalPackage(at directoryURL: URL) throws -> (package: CodexPetPackage, pet: CodexPet) {
+        let directoryName = directoryURL.lastPathComponent
+        let manifestURL = directoryURL.appendingPathComponent("pet.json", isDirectory: false)
+        guard FileManager.default.isReadableFile(atPath: manifestURL.path), let data = try? Data(contentsOf: manifestURL) else { throw CodexPetPackageError.missingManifest }
+        guard let manifest = try? JSONDecoder().decode(CodexPetManifest.self, from: data) else { throw CodexPetPackageError.invalidManifest }
+        guard manifest.id == directoryName else { throw CodexPetPackageError.mismatchedID(expected: directoryName, actual: manifest.id) }
+        let displayName = manifest.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayName.isEmpty else { throw CodexPetPackageError.emptyDisplayName }
+        let spriteVersionNumber = manifest.spriteVersionNumber ?? 1
+        guard spriteVersionNumber == 2 else { throw CodexPetPackageError.unsupportedVersion(spriteVersionNumber) }
+        let spritesheetPath = manifest.spritesheetPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spritesheetPath.isEmpty, !(spritesheetPath as NSString).isAbsolutePath else { throw CodexPetPackageError.invalidSpritesheetPath }
+        let atlasURL = directoryURL.appendingPathComponent(spritesheetPath, isDirectory: false).standardizedFileURL
+        guard isContained(atlasURL, in: directoryURL) else { throw CodexPetPackageError.invalidSpritesheetPath }
+        let atlasExtension = atlasURL.pathExtension.lowercased()
+        guard atlasExtension == "png" || atlasExtension == "webp" else { throw CodexPetPackageError.unsupportedSpritesheetFormat(atlasExtension.isEmpty ? "未知格式" : atlasExtension) }
+        guard let image = NSImage(contentsOf: atlasURL), let atlas = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { throw CodexPetPackageError.unreadableSpritesheet }
+        guard atlas.width == 1536, atlas.height == 2288 else { throw CodexPetPackageError.invalidSpritesheetSize(width: atlas.width, height: atlas.height) }
+        let package = CodexPetPackage(id: manifest.id, displayName: displayName, directoryName: directoryName)
+        return (package, CodexPet(manifest: manifest, atlas: atlas))
+    }
+
     // SwiftPM 处理资源时可能展平目录，因此同时接受源码子目录和 bundle 根目录中的固定文件名。
     private static func bundledURL(named name: String, fileExtension: String) -> URL? {
         bundledResources.url(forResource: name, withExtension: fileExtension, subdirectory: "Pets/Trump") ?? bundledResources.url(forResource: name, withExtension: fileExtension)
+    }
+
+    // 同时比较标准化路径和符号链接解析结果，确保 pet.json 不能把图集指向包目录之外。
+    private static func isContained(_ candidateURL: URL, in directoryURL: URL) -> Bool {
+        let resolvedDirectoryPath = directoryURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolvedCandidatePath = candidateURL.standardizedFileURL.resolvingSymlinksInPath().path
+        return resolvedCandidatePath.hasPrefix(resolvedDirectoryPath + "/")
     }
 
     // 按图集顶端起算的行列裁切帧，避免每次刷新悬浮窗都重复解码 WebP。
@@ -146,7 +210,7 @@ final class CodexPet {
     private func cropFrames(for pose: CodexPetPose, from sourceAtlas: CGImage) -> [NSImage] {
         pose.columns.map { column -> NSImage in
             let rect = CGRect(x: CGFloat(column) * cellSize.width, y: CGFloat(pose.row) * cellSize.height, width: cellSize.width, height: cellSize.height)
-            guard let frame = sourceAtlas.cropping(to: rect) else { preconditionFailure("Trump 图集裁切失败：row=\(pose.row), column=\(column)") }
+            guard let frame = sourceAtlas.cropping(to: rect) else { preconditionFailure("宠物图集裁切失败：row=\(pose.row), column=\(column)") }
             return NSImage(cgImage: frame, size: cellSize)
         }
     }

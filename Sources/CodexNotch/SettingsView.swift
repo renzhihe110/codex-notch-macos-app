@@ -2,24 +2,28 @@ import AppKit
 import Carbon
 import SwiftUI
 
-// 提供应用设置页，集中暴露快捷键和悬浮球入口外观配置。
+// 提供应用设置页，集中暴露快捷键、悬浮球外观、宠物和局域网配置。
 struct SettingsView: View {
     @ObservedObject var settings: HotKeySettings
     @ObservedObject var capsuleSettings: CapsuleSettings
     @ObservedObject var completionPopupSettings: CompletionPopupSettings
+    @ObservedObject var petCatalog: CodexPetCatalog
     @ObservedObject var pairingStore: PairingStore
     @ObservedObject var lanStatusServer: LANStatusServer
     // 监听共享字体偏好，确保设置页中的文字和预览能即时刷新。
     @ObservedObject private var fontSettings = FontSettings.shared
     // 监听项目目录颜色偏好，让取色盘与当前选择保持同步。
     @ObservedObject private var directoryColorSettings = DirectoryColorSettings.shared
+    // 更新检查器仅在设置页存活，避免未签名版本后台静默下载或替换应用。
+    @StateObject private var updateChecker = GitHubUpdateChecker()
     @State private var isRecording = false
     @State private var eventMonitor: Any?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("设置")
-                .font(fontSettings.font(size: 22, weight: .semibold))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("设置")
+                    .font(fontSettings.font(size: 22, weight: .semibold))
             // 字体菜单只列出当前 Mac 已安装的常用中文字体，选择后即时刷新整个应用。
             VStack(alignment: .leading, spacing: 10) {
                 Text("字体")
@@ -92,6 +96,59 @@ struct SettingsView: View {
                     .frame(width: 180)
                 }
             }
+            // 宠物区域与右键菜单共享同一目录模型，选择和手动扫描结果会即时双向同步。
+            VStack(alignment: .leading, spacing: 10) {
+                Text("宠物")
+                    .font(fontSettings.font(size: 17, weight: .semibold))
+                HStack(spacing: 12) {
+                    Text("当前宠物")
+                    Spacer(minLength: 16)
+                    Picker("当前宠物", selection: petSelectionBinding) {
+                        ForEach(petCatalog.options) { option in
+                            Text(option.displayName).tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 260)
+                }
+                HStack(spacing: 12) {
+                    Button("扫描宠物") {
+                        petCatalog.rescan()
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer(minLength: 16)
+                    Text("发现 \(petCatalog.scanSummary.availableCount) 个，跳过 \(petCatalog.scanSummary.skippedCount) 个")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(petCatalog.scanSummary.issues) { issue in
+                    Text("\(issue.directoryName)：\(issue.reason)")
+                        .font(fontSettings.font(size: 12))
+                        .foregroundStyle(.red)
+                }
+            }
+            // 未签名版本只检查 GitHub Release，并把安装动作明确交还给用户。
+            VStack(alignment: .leading, spacing: 10) {
+                Text("软件更新")
+                    .font(fontSettings.font(size: 17, weight: .semibold))
+                HStack(spacing: 12) {
+                    Text("当前版本 \(updateChecker.currentVersion)")
+                    Spacer(minLength: 16)
+                    Button(updateChecker.isChecking ? "检查中…" : "检查更新") {
+                        updateChecker.checkForUpdates()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(updateChecker.isChecking)
+                }
+                Text(updateChecker.statusMessage)
+                    .font(fontSettings.font(size: 12))
+                    .foregroundStyle(.secondary)
+                if let releaseURL = updateChecker.latestReleaseURL {
+                    Button("打开 GitHub Release 下载页") {
+                        NSWorkspace.shared.open(releaseURL)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
             // 完成弹窗关闭时间使用步进器，避免输入非法秒数导致提示常驻或闪退。
             VStack(alignment: .leading, spacing: 10) {
                 Text("完成弹窗")
@@ -109,9 +166,11 @@ struct SettingsView: View {
             }
             Divider()
             lanPairingSection
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(20)
-        .frame(width: 520, alignment: .leading)
+        .frame(width: 520)
         .font(fontSettings.font(size: 13))
         .onDisappear {
             stopRecording()
@@ -121,6 +180,11 @@ struct SettingsView: View {
     // Picker 使用显式 Binding，确保选择变更走设置对象的持久化和通知逻辑。
     private var capsuleSizeBinding: Binding<CapsuleSize> {
         Binding(get: { capsuleSettings.size }, set: { capsuleSettings.select(size: $0) })
+    }
+
+    // 设置页选择只提交稳定选项 ID，保持与右键菜单共用同一持久化入口。
+    private var petSelectionBinding: Binding<String> {
+        Binding(get: { petCatalog.selectedOptionID }, set: { petCatalog.select(optionID: $0) })
     }
 
     // 字体选择通过设置对象写入 UserDefaults，重启后仍使用上一次的选择。

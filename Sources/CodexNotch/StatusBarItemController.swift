@@ -9,12 +9,14 @@ final class StatusBarItemController: NSObject {
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
     private let capsuleSettings: CapsuleSettings
-    private let pet: CodexPet
-    private let petThemeSettings = CodexPetThemeSettings.shared
+    private let petCatalog: CodexPetCatalog
+    private var pet: CodexPet
+    private var petTheme: CodexPetTheme?
     private var state: NotchState
     private var animationTimer: Timer?
     private var carouselTimer: Timer?
     private var capsuleSettingsObserver: NSObjectProtocol?
+    private var petCatalogObserver: NSObjectProtocol?
     private var displayedPose: CodexPetPose?
     private var interactionPose: CodexPetPose?
     private var dragPose: CodexPetPose = .runningRight
@@ -30,15 +32,18 @@ final class StatusBarItemController: NSObject {
     private let dragThreshold: CGFloat = 3
     private var pillSize: CGSize
 
-    init(initialState: NotchState, capsuleSettings: CapsuleSettings, onActivate: @escaping (CGRect) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
+    init(initialState: NotchState, capsuleSettings: CapsuleSettings, petCatalog: CodexPetCatalog, onActivate: @escaping (CGRect) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
         let initialPillSize = capsuleSettings.size.dimensions
+        let initialPetSelection = petCatalog.renderingSelection()
         self.state = initialState
         self.onActivate = onActivate
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
         self.capsuleSettings = capsuleSettings
-        self.pet = CodexPet.loadBundled()
+        self.petCatalog = petCatalog
+        self.pet = initialPetSelection.pet
+        self.petTheme = initialPetSelection.theme
         self.pillSize = initialPillSize
         self.pillView = StatusPillView(frame: CGRect(origin: .zero, size: initialPillSize))
         self.window = NSWindow(contentRect: CGRect(origin: .zero, size: initialPillSize), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -46,6 +51,7 @@ final class StatusBarItemController: NSObject {
         configureWindow()
         configurePillView()
         configureCapsuleSettingsObserver()
+        configurePetCatalogObserver()
         configureCarouselTimer()
         update(state: initialState)
     }
@@ -58,6 +64,9 @@ final class StatusBarItemController: NSObject {
         carouselTimer?.invalidate()
         if let capsuleSettingsObserver {
             NotificationCenter.default.removeObserver(capsuleSettingsObserver)
+        }
+        if let petCatalogObserver {
+            NotificationCenter.default.removeObserver(petCatalogObserver)
         }
     }
 
@@ -131,6 +140,19 @@ final class StatusBarItemController: NSObject {
         }
     }
 
+    // 宠物选择或目录扫描变化后替换渲染资源，并从当前有效动作的首帧重新播放。
+    private func configurePetCatalogObserver() {
+        petCatalogObserver = NotificationCenter.default.addObserver(forName: CodexPetCatalog.changedNotification, object: petCatalog, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let selection = self.petCatalog.renderingSelection()
+            self.pet = selection.pet
+            self.petTheme = selection.theme
+            self.displayedPose = nil
+            self.animationFrameIndex = 0
+            self.refreshPetAnimation()
+        }
+    }
+
     // 多个红黄灯会话时轮播 tooltip 目标，胶囊文字保持短小不挤占视觉空间。
     private func configureCarouselTimer() {
         carouselTimer?.invalidate()
@@ -186,7 +208,7 @@ final class StatusBarItemController: NSObject {
     private func renderPetFrameAndScheduleNext() {
         stopPetAnimation()
         guard isEntryVisible, let displayedPose else { return }
-        let frames = pet.frames(for: displayedPose, theme: petThemeSettings.theme)
+        let frames = frames(for: displayedPose)
         animationFrameIndex = min(animationFrameIndex, frames.count - 1)
         pillView.image = frames[animationFrameIndex]
         pillView.toolTip = tooltipText
@@ -201,7 +223,7 @@ final class StatusBarItemController: NSObject {
     // 循环动作回到首帧；挥手和跳跃只播一轮，然后恢复最新有效动作。
     private func advancePetFrame() {
         guard let displayedPose else { return }
-        let frames = pet.frames(for: displayedPose, theme: petThemeSettings.theme)
+        let frames = frames(for: displayedPose)
         if animationFrameIndex + 1 < frames.count {
             animationFrameIndex += 1
             renderPetFrameAndScheduleNext()
@@ -215,6 +237,12 @@ final class StatusBarItemController: NSObject {
         }
         animationFrameIndex = 0
         renderPetFrameAndScheduleNext()
+    }
+
+    // 外部宠物直接使用自身完整 v2 图集，只有内置 Trump 才叠加主题资源。
+    private func frames(for pose: CodexPetPose) -> [NSImage] {
+        guard let petTheme else { return pet.frames(for: pose) }
+        return pet.frames(for: pose, theme: petTheme)
     }
 
     // 启动一次性交互动作，并覆盖尚未完成的上一次一次性动作。
@@ -301,7 +329,7 @@ final class StatusBarItemController: NSObject {
         interactionPose = .review
         displayedPose = nil
         refreshPetAnimation()
-        updateThemeMenuState()
+        rebuildPetMenu()
         NSMenu.popUpContextMenu(contextMenu, with: event, for: pillView)
         if interactionPose == .review { interactionPose = nil }
         displayedPose = nil
@@ -348,22 +376,15 @@ final class StatusBarItemController: NSObject {
         let menu = NSMenu()
         let switchItem = NSMenuItem(title: "切换到刘海居中模式", action: #selector(handleToggleMode), keyEquivalent: "")
         switchItem.target = self
-        let themeItem = NSMenuItem(title: "宠物主题", action: nil, keyEquivalent: "")
-        let themeMenu = NSMenu(title: "宠物主题")
-        for theme in CodexPetTheme.allCases {
-            let item = NSMenuItem(title: theme.displayName, action: #selector(handleSelectTheme(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = theme.rawValue
-            themeMenu.addItem(item)
-        }
-        themeItem.submenu = themeMenu
+        let petItem = NSMenuItem(title: "宠物", action: nil, keyEquivalent: "")
+        petItem.submenu = NSMenu(title: "宠物")
         let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
         settingsItem.target = self
         let quitItem = NSMenuItem(title: "退出 Codex Notch", action: #selector(handleQuit), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(switchItem)
         menu.addItem(.separator())
-        menu.addItem(themeItem)
+        menu.addItem(petItem)
         menu.addItem(.separator())
         menu.addItem(settingsItem)
         menu.addItem(.separator())
@@ -371,18 +392,23 @@ final class StatusBarItemController: NSObject {
         return menu
     }()
 
-    // 菜单弹出前同步持久化选择，确保当前主题始终只有一个勾选项。
-    private func updateThemeMenuState() {
-        guard let themeItems = contextMenu.items.first(where: { $0.title == "宠物主题" })?.submenu?.items else { return }
-        for item in themeItems { item.state = item.representedObject as? String == petThemeSettings.theme.rawValue ? .on : .off }
+    // 菜单弹出前使用目录模型重建选项，确保设置页和右键菜单顺序、名称及勾选状态一致。
+    private func rebuildPetMenu() {
+        guard let petMenu = contextMenu.items.first(where: { $0.title == "宠物" })?.submenu else { return }
+        petMenu.removeAllItems()
+        for option in petCatalog.options {
+            let item = NSMenuItem(title: option.displayName, action: #selector(handleSelectPet(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option.id
+            item.state = option.id == petCatalog.selectedOptionID ? .on : .off
+            petMenu.addItem(item)
+        }
     }
 
-    // 切换主题后立即从运行动作首帧刷新；非运行状态保持当前动作不变。
-    @objc private func handleSelectTheme(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String, let theme = CodexPetTheme(rawValue: rawValue) else { return }
-        petThemeSettings.select(theme: theme)
-        displayedPose = nil
-        refreshPetAnimation()
+    // 右键菜单只提交稳定选项 ID，实际持久化和渲染刷新统一由目录模型处理。
+    @objc private func handleSelectPet(_ sender: NSMenuItem) {
+        guard let optionID = sender.representedObject as? String else { return }
+        petCatalog.select(optionID: optionID)
     }
 
     @objc private func handleToggleMode() {

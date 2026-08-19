@@ -8,7 +8,7 @@ struct CodexNotchApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared, completionPopupSettings: CompletionPopupSettings.shared, pairingStore: PairingStore.shared, lanStatusServer: LANStatusServer.shared)
+            SettingsView(settings: HotKeySettings.shared, capsuleSettings: CapsuleSettings.shared, completionPopupSettings: CompletionPopupSettings.shared, petCatalog: CodexPetCatalog.shared, pairingStore: PairingStore.shared, lanStatusServer: LANStatusServer.shared)
         }
     }
 }
@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeySettings = HotKeySettings.shared
     private let capsuleSettings = CapsuleSettings.shared
     private let completionPopupSettings = CompletionPopupSettings.shared
+    private let petCatalog = CodexPetCatalog.shared
     private let pairingStore = PairingStore.shared
     private let lanStatusServer = LANStatusServer.shared
     private var notchWindowController: NotchWindowController?
@@ -30,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var completionPopupController = CompletionPopupController(settings: completionPopupSettings, onOpenSession: { [weak self] session in
         self?.jump(to: session)
     })
-    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, pairingStore: pairingStore, lanStatusServer: lanStatusServer)
+    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog, pairingStore: pairingStore, lanStatusServer: lanStatusServer)
     private var refreshTimer: Timer?
     private var isRefreshInFlight = false
     private var hasLoadedInitialSnapshot = false
@@ -51,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.toggleDisplayMode()
         })
         notchWindowController = controller
-        let statusController = StatusBarItemController(initialState: initialState, capsuleSettings: capsuleSettings, onActivate: { [weak self] entryFrame in
+        let statusController = StatusBarItemController(initialState: initialState, capsuleSettings: capsuleSettings, petCatalog: petCatalog, onActivate: { [weak self] entryFrame in
             self?.notchWindowController?.toggleFromStatusItem(entryFrame: entryFrame)
         }, onOpenSettings: { [weak self] in
             self?.openSettings()
@@ -172,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-// 运行期入口展示模式不持久化，启动始终直接显示内置悬浮宠物。
+// 运行期入口展示模式不持久化，启动始终直接显示当前已保存的悬浮宠物。
 private enum EntryDisplayMode {
     case notchCentered
     case capsule
@@ -180,13 +181,13 @@ private enum EntryDisplayMode {
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
 private final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, pairingStore: PairingStore, lanStatusServer: LANStatusServer) {
+    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, petCatalog: CodexPetCatalog, pairingStore: PairingStore, lanStatusServer: LANStatusServer) {
         // 设置页新增目录颜色取色盘后扩展窗口高度，避免局域网配置被裁切。
         let contentSize = CGSize(width: 520, height: 625)
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex Notch 设置"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, pairingStore: pairingStore, lanStatusServer: lanStatusServer))
+        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog, pairingStore: pairingStore, lanStatusServer: lanStatusServer))
         super.init(window: window)
         window.delegate = self
     }
