@@ -325,11 +325,10 @@ struct NotchView: View {
         }
     }
 
-    // 剩余副标题沿用弱化颜色，目录本身由独立 Text 使用用户选择的颜色。
+    // 副标题组合工作目录和原始 title，目录本身由独立 Text 使用用户选择的颜色。
     private func floatingTaskSubtitleDetails(_ session: CodexSession) -> String {
-        let latestMessage = session.latestMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let latestMessage, !latestMessage.isEmpty { return " · \(latestMessage) · \(session.activityText)" }
-        return " · \(session.activityText)"
+        guard let sourceTitle = session.displaySourceTitle else { return "" }
+        return " · \(sourceTitle)"
     }
 
     private func floatingStatusText(for session: CodexSession) -> String {

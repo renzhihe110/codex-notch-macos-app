@@ -46,7 +46,7 @@ enum StatusMapper {
     // 保留原会话展示字段，仅替换计算后的状态。
     private static func mappedSession(_ session: CodexSession, now: Date) -> CodexSession {
         let mappedStatus = status(for: session)
-        return CodexSession(id: session.id, title: session.title, cwd: session.cwd, createdAt: session.createdAt, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, completionEventAt: session.completionEventAt, status: mappedStatus, attention: attention(for: session, status: mappedStatus, now: now))
+        return CodexSession(id: session.id, name: session.name, title: session.title, cwd: session.cwd, createdAt: session.createdAt, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, completionEventAt: session.completionEventAt, status: mappedStatus, attention: attention(for: session, status: mappedStatus, now: now))
     }
 
     // 在红黄绿之外补一层注意力原因，只服务提醒和文案，不改变原始数据。

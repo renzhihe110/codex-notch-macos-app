@@ -34,6 +34,8 @@ enum SessionAttention: String, Equatable {
 // 承载单个 Codex 会话的轻量展示模型。
 struct CodexSession: Identifiable, Equatable {
     let id: String
+    // Codex 任务列表生成的短标题；旧数据库可能没有该字段。
+    let name: String?
     let title: String
     let cwd: String
     // 创建时间保留原始元数据，最后活动时间用于可见任务排序、文案和状态判断。
@@ -48,10 +50,18 @@ struct CodexSession: Identifiable, Equatable {
     let status: SessionStatus
     let attention: SessionAttention?
 
-    // 提供 UI 可直接使用的标题，避免空标题落到视图层处理。
+    // 主标题优先对齐 Codex 的 name，缺失时回退原始 title 和工作目录。
     var displayTitle: String {
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedName.isEmpty { return trimmedName }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedTitle.isEmpty ? cwdHint : trimmedTitle
+    }
+
+    // 副标题只补充与主标题不同的原始 title，避免旧库和 fallback 数据重复显示。
+    var displaySourceTitle: String? {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty || trimmedTitle == displayTitle ? nil : trimmedTitle
     }
 
     // 将完整工作目录压缩成最后一级目录名，便于 notch 小空间展示。

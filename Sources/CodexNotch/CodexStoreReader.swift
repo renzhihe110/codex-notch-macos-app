@@ -229,6 +229,8 @@ final class CodexStoreReader {
         }
 
         let rolloutPathExpr = nullableColumn("rollout_path", columns: columns)
+        // name 与原始 title 分开读取，供主副标题组合展示；旧数据库会为 name 返回 NULL。
+        let nameExpr = nullableColumn("name", columns: columns)
         let titleExpr = nullableColumn("title", columns: columns)
         let cwdExpr = nullableColumn("cwd", columns: columns)
         // 创建与活动时间分别读取，可见列表在截断前按最后活动时间排序。
@@ -240,7 +242,7 @@ final class CodexStoreReader {
         if columns.contains("thread_source") { sessionFilters.append("COALESCE(thread_source, '') != 'subagent'") }
         if columns.contains("source") { sessionFilters.append("COALESCE(source, '') NOT LIKE '%subagent%'") }
         let sessionFilter = sessionFilters.isEmpty ? "" : "WHERE \(sessionFilters.joined(separator: " AND "))"
-        let sql = "SELECT id, \(titleExpr), \(cwdExpr), \(createdExpr), \(updatedExpr), \(rolloutPathExpr) FROM threads \(sessionFilter) ORDER BY \(updatedExpr) DESC, id DESC LIMIT ?"
+        let sql = "SELECT id, \(nameExpr), \(titleExpr), \(cwdExpr), \(createdExpr), \(updatedExpr), \(rolloutPathExpr) FROM threads \(sessionFilter) ORDER BY \(updatedExpr) DESC, id DESC LIMIT ?"
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -254,12 +256,13 @@ final class CodexStoreReader {
         var stepResult = sqlite3_step(statement)
         while stepResult == SQLITE_ROW {
             if let id = sqliteText(statement, index: 0), !id.isEmpty {
-                let cwd = sqliteText(statement, index: 2) ?? ""
-                let title = preferredTitle(title: sqliteText(statement, index: 1), cwd: cwd, fallback: id)
-                let createdAt = dateFromSQLiteMilliseconds(statement: statement, index: 3)
-                let updatedAt = dateFromSQLiteMilliseconds(statement: statement, index: 4)
-                let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 5), errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
-                sessions.append(CodexSession(id: id, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
+                let cleanedName = cleanedTitle(sqliteText(statement, index: 1) ?? "")
+                let cwd = sqliteText(statement, index: 3) ?? ""
+                let title = preferredTitle(title: sqliteText(statement, index: 2), cwd: cwd, fallback: id)
+                let createdAt = dateFromSQLiteMilliseconds(statement: statement, index: 4)
+                let updatedAt = dateFromSQLiteMilliseconds(statement: statement, index: 5)
+                let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 6), errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
+                sessions.append(CodexSession(id: id, name: cleanedName.isEmpty ? nil : cleanedName, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
             }
             stepResult = sqlite3_step(statement)
         }
@@ -444,7 +447,7 @@ final class CodexStoreReader {
             let title = preferredTitle(title: object["thread_name"] as? String, cwd: cwd, fallback: id)
             let updatedAt = isoDate((object["updated_at"] as? String) ?? "") ?? Date(timeIntervalSince1970: 0)
             let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
-            sessions.append(CodexSession(id: id, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
+            sessions.append(CodexSession(id: id, name: nil, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
         }
         if sessions.isEmpty {
             errors.append("session_index.jsonl 未读取到可用会话")
