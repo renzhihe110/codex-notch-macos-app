@@ -37,10 +37,11 @@ swift build -c "$CONFIGURATION" --product "$EXECUTABLE_NAME"
 BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
 RESOURCE_BUNDLE="$BIN_DIR/CodexNotch_CodexNotch.bundle"
 THIRD_PARTY_NOTICE="$APP_DIR/THIRD_PARTY_NOTICES.md"
+APP_ICON="$APP_DIR/Sources/CodexNotch/Resources/AppIcon.icns"
 
 # DockCat 图片、许可证和归属说明必须同时进入 app，缺失时停止生成不完整产物。
-if [[ ! -d "$RESOURCE_BUNDLE" || ! -f "$THIRD_PARTY_NOTICE" ]]; then
-    echo "缺少 DockCat 资源 bundle 或第三方归属说明" >&2
+if [[ ! -d "$RESOURCE_BUNDLE" || ! -f "$THIRD_PARTY_NOTICE" || ! -f "$APP_ICON" ]]; then
+    echo "缺少 DockCat 资源 bundle、第三方归属说明或 App 图标" >&2
     exit 66
 fi
 
@@ -50,6 +51,8 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_DIR/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
 cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
 cp "$THIRD_PARTY_NOTICE" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
+# App 图标必须复制到 bundle 顶层 Resources，Finder 和系统权限页才会读取。
+cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
 
 # 写入最小 Info.plist，让 Finder 能把产物识别为 macOS 应用。
 /usr/libexec/PlistBuddy -c "Clear dict" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 || true
@@ -57,6 +60,7 @@ cp "$THIRD_PARTY_NOTICE" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
 /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $EXECUTABLE_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_IDENTIFIER" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleInfoDictionaryVersion string 6.0" "$CONTENTS_DIR/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$CONTENTS_DIR/Info.plist"
 # 发布到 GitHub Releases 时从环境变量写入版本，确保应用内比较使用真实版本号。
@@ -80,5 +84,7 @@ if ! mv "$STAGED_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"; then
     exit 67
 fi
 rm -rf "$PREVIOUS_APP_BUNDLE"
+# 安装后更新时间戳，帮助 Finder 和系统设置刷新新增的 app 图标缓存。
+touch "$INSTALLED_APP_BUNDLE"
 echo "App 已生成: $APP_BUNDLE"
 echo "App 已安装: $INSTALLED_APP_BUNDLE"

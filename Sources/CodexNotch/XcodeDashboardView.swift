@@ -116,7 +116,7 @@ struct XcodeDashboardView: View {
             Image(systemName: availabilityIcon).font(fontSettings.font(size: 28, weight: .medium)).foregroundStyle(Color(red: 0.24, green: 0.61, blue: 1.0))
             Text(availabilityTitle).font(fontSettings.font(size: 17, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
             Text(availabilityMessage).font(fontSettings.font(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.52)).multilineTextAlignment(.center)
-            if manager.availability == .permissionRequired { Button("打开辅助功能设置", action: onOpenAccessibilitySettings).buttonStyle(XcodeDashboardActionButtonStyle()) }
+            if manager.availability == .permissionRequired { Button("打开辅助功能设置", action: onOpenAccessibilitySettings).buttonStyle(XcodeDashboardActionButtonStyle(font: fontSettings.font(size: 13, weight: .semibold))) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 24)
@@ -125,7 +125,7 @@ struct XcodeDashboardView: View {
     // 底部只说明点击切换，唤醒失败时原位替换为短错误提示。
     private var dashboardFooter: some View {
         HStack(spacing: 0) {
-            Text(manager.actionErrorMessage ?? footerText).font(fontSettings.font(size: 13, weight: .medium)).foregroundStyle(manager.actionErrorMessage == nil ? .white.opacity(0.45) : Color(red: 1.0, green: 0.48, blue: 0.46)).lineLimit(1)
+            Text(manager.actionErrorMessage ?? footerText).font(fontSettings.font(size: 11, weight: .medium)).foregroundStyle(manager.actionErrorMessage == nil ? .white.opacity(0.45) : Color(red: 1.0, green: 0.48, blue: 0.46)).lineLimit(1)
             Spacer(minLength: 0)
         }
         // Footer 内容必须占满固定高度，才能让分割线贴顶且提示在底栏垂直居中。
@@ -155,5 +155,7 @@ struct XcodeDashboardView: View {
 
 // 辅助功能设置按钮使用 Xcode 蓝色，保持空态唯一主操作清晰可见。
 private struct XcodeDashboardActionButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).padding(.horizontal, 14).frame(height: 32).background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(red: 0.15, green: 0.48, blue: 0.92).opacity(configuration.isPressed ? 0.75 : 1))) }
+    // 空态按钮显式接收全局字体，确保用户切换 Codex 字体后 Xcode 面板同步更新。
+    let font: Font
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(font).foregroundStyle(.white).padding(.horizontal, 14).frame(height: 32).background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(red: 0.15, green: 0.48, blue: 0.92).opacity(configuration.isPressed ? 0.75 : 1))) }
 }
