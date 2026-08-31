@@ -8,7 +8,8 @@ CONFIGURATION="${1:-debug}"
 
 # 复用现有打包脚本生成完整 App Bundle，避免裸可执行文件缺少系统 Bundle 上下文。
 "$SCRIPT_DIR/package_app.sh" "$CONFIGURATION"
-APP_BUNDLE="$APP_DIR/dist/Codex Notch.app"
+# 打包脚本会将最新构建安装到应用程序目录，启动时始终使用已安装版本。
+APP_BUNDLE="/Applications/Codex Notch.app"
 TERMINAL_DEVICE="$(tty 2>/dev/null || printf '/dev/null\n')"
 
 # 通过 LaunchServices 前台启动 App，并把运行日志转回当前终端。

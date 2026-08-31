@@ -1,6 +1,6 @@
 # Codex Notch macOS App
 
-这是一个独立的 macOS SwiftPM MVP，用来在屏幕顶部展示 Codex 桌面刘海屏体验。它只读读取本机 Codex 状态，收起时展示当前会话状态、标题和完成进度，存在运行中或等待处理的会话时会轮播提示；展开后展示最近会话列表，点击会话可尝试通过 Codex 深链回到对应工作上下文。
+这是一个独立的 macOS SwiftPM MVP，用来在屏幕顶部展示 Codex 桌面刘海屏体验，并通过独立的 Xcode Dashboard 快速切换本机项目窗口。它只读读取本机 Codex 状态，收起时展示当前会话状态、标题和完成进度，存在运行中或等待处理的会话时会轮播提示；展开后展示最近会话列表，点击会话可尝试通过 Codex 深链回到对应工作上下文。
 
 ## 项目目标
 
@@ -10,6 +10,7 @@
 - 展开后展示最多 8 条最近会话，包括标题、工作目录提示、最近活动时间和注意力状态。
 - 点击会话后优先打开 `codex://threads/<thread-id>` 深链，并通过可见 Terminal 执行 `codex resume <threadID>` 作为兜底。
 - 支持可配置快捷键展开面板，默认 `Cmd+F1`，展开后用上下键切换会话，回车进入选中对话，`Esc` 收起面板。
+- 提供完全独立的 Xcode Dashboard，默认使用 `Cmd+F2` 呼出当前项目窗口列表，点击行即可精准唤醒对应窗口。
 
 ## 运行方式
 
@@ -25,7 +26,7 @@
 
 ## 打包成 App
 
-在 `codex-notch-macos-app/` 目录下执行 `./scripts/package_app.sh` 可以生成 release 版 `dist/Codex Notch.app`，执行 `./scripts/package_app.sh debug` 可以生成 debug 版。该 app bundle 默认使用 `local.codex.notch` 作为 bundle identifier，也可以通过 `BUNDLE_IDENTIFIER=... ./scripts/package_app.sh` 覆盖。产物是本地未签名 app，后续如果要分发还需要签名和 notarize。
+在 `codex-notch-macos-app/` 目录下执行 `./scripts/package_app.sh` 可以生成 release 版 `dist/Codex Notch.app`，执行 `./scripts/package_app.sh debug` 可以生成 debug 版。每次打包完成后，脚本会安全替换并安装到 `/Applications/Codex Notch.app`；`./scripts/run.sh` 也会启动这个已安装版本。该 app bundle 默认使用 `local.codex.notch` 作为 bundle identifier，也可以通过 `BUNDLE_IDENTIFIER=... ./scripts/package_app.sh` 覆盖。产物是本地未签名 app，后续如果要分发还需要签名和 notarize。
 
 发布 GitHub Release 前可通过 `APP_VERSION=0.2.0 BUILD_NUMBER=2 ./scripts/package_app.sh` 写入版本号，并使用 `v0.2.0` 形式创建 Release 标签。设置页的“检查更新”会读取公开仓库 `renzhihe110/codex-notch-macos-app` 的最新 Release；由于当前产物未签名，发现新版后只打开下载页，不会自动替换应用。
 
@@ -42,6 +43,7 @@
 - 图钉可让悬浮 Dashboard 保持常驻，设置按钮打开设置页，关闭按钮立即收起；未常驻时窗口失焦或点击外部会自动收起。
 - 刘海展开面板高度会适配当前屏幕状态栏高度，不再长期覆盖系统状态栏图标。
 - 默认每 1 秒刷新一次本机 Codex 状态。
+- Xcode Dashboard 可见时每 1 秒刷新当前项目窗口；Codex 与 Xcode Dashboard 互斥显示。
 - 点击刘海区域会展开面板，点击面板外或按 Escape 会收起；悬浮模式只通过单击宠物切换 Dashboard。
 - 右键点击刘海屏可以打开设置或退出应用。
 - 状态灯使用红、黄、绿三色：黄色闪烁表示运行中，红色闪烁表示等待输入或失败信号，绿色常亮表示当前无运行中任务或会话完成。
@@ -58,6 +60,7 @@
 - 应用不写入 `~/.codex` 下任何文件。
 - jsonl 会话状态只读取尾部有限事件元数据；Token 统计流式跳过非 `token_count` 内容，不展示用户正文、助手正文或完整对话内容。
 - 应用不修改、不注入、不 patch Codex App。
+- Xcode 窗口列表只通过 macOS Accessibility API 在本机读取，首次使用需要授予辅助功能权限。
 - 应用不上传本地 Codex 数据，所有读取和展示都限定在本机。
 - 本地通知只使用会话标题、工作目录名、状态关键词和活动时间，不展示用户正文、助手正文或完整对话内容。
 
@@ -77,7 +80,8 @@
 
 ## 快捷键和提醒
 
-- 默认 `Cmd+F1`：展开刘海面板并聚焦键盘选择，可在右键菜单的设置页中修改。
+- 默认 `Cmd+F1`：展开 Codex 面板并聚焦键盘选择，可在右键菜单的设置页中修改。
+- 默认 `Cmd+F2`：打开或关闭独立 Xcode Dashboard，可在同一设置页中单独修改。
 - `↑` / `↓`：在展开面板中切换选中会话。
 - `Return`：进入当前选中会话。
 - `Esc`：收起展开面板。
@@ -90,6 +94,7 @@
 - 第一版只展示红黄绿状态，不展示百分比进度。
 - 第一版依赖 Codex App 对 `codex://threads/<thread-id>` 的支持；如果本机 Codex App 版本不支持该深链，会退回 Terminal resume。
 - 第一版不写入会话状态，也不创建新的 Codex thread。
+- Xcode 精准切换依赖 macOS 辅助功能权限；未授权时 Dashboard 只展示授权引导。
 - 第一版状态判断保持保守，只对等待输入、权限确认、明确阻塞或运行事件超过约 10 分钟没有新活动的会话做额外提醒。
 
 ## 手动验收清单
@@ -107,6 +112,9 @@
 - 向左、向右拖动宠物会播放对应方向的奔跑动作，松手不会打开 Dashboard，拖动和右键操作不会改变已展开窗口的位置。
 - 会话列表不展示用户正文、助手正文或完整对话内容。
 - 默认 `Cmd+F1` 能展开面板，设置页修改快捷键后新快捷键能展开面板，上下键能切换高亮行，回车能进入选中会话，`Esc` 能收起面板。
+- 默认 `Cmd+F2` 能打开独立 Xcode Dashboard；列表只展示项目窗口，点击任意一行后对应 Xcode 窗口被提升到前台。
+- Codex Dashboard 打开时触发 Xcode 快捷键会先收起 Codex；Xcode Dashboard 打开时触发 Codex 快捷键或点击宠物会先收起 Xcode。
+- 未授予辅助功能权限时显示授权引导，授权后重新触发快捷键可以读取窗口列表。
 - 等待输入或可能停滞的会话会显示对应短文案，并在通知权限允许时触发本地通知。
 - 点击 UUID 形态的会话后，Codex App 会尝试打开对应 thread 深链并被激活。
 - 深链或 Codex App 不可用时，Terminal 中能看到 `codex resume <threadID>` 命令被执行。

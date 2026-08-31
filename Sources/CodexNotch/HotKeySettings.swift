@@ -34,12 +34,10 @@ final class HotKeySettings: ObservableObject {
 
     // 将录制到的按键转换成 Carbon 可注册的快捷键，避免保存无修饰键的普通字符键。
     func update(from event: NSEvent) -> Bool {
-        let modifiers = Self.carbonModifiers(from: event.modifierFlags)
-        guard Self.hasRequiredModifier(modifiers) else {
+        guard let updatedHotKey = Self.recordedHotKey(from: event) else {
             validationMessage = "请至少包含 Command、Option 或 Control"
             return false
         }
-        let updatedHotKey = HotKey(keyCode: UInt32(event.keyCode), carbonModifiers: modifiers, keyLabel: Self.keyLabel(for: event))
         save(updatedHotKey)
         validationMessage = nil
         return true
@@ -114,6 +112,13 @@ final class HotKeySettings: ObservableObject {
         return modifiers
     }
 
+    // Codex 与 Xcode 快捷键共享同一录制规则，避免两个设置入口对修饰键和按键名称产生不同解释。
+    static func recordedHotKey(from event: NSEvent) -> HotKey? {
+        let modifiers = carbonModifiers(from: event.modifierFlags)
+        guard hasRequiredModifier(modifiers) else { return nil }
+        return HotKey(keyCode: UInt32(event.keyCode), carbonModifiers: modifiers, keyLabel: keyLabel(for: event))
+    }
+
     static func displayText(for carbonModifiers: UInt32) -> String {
         var parts: [String] = []
         if carbonModifiers & UInt32(controlKey) != 0 { parts.append("⌃") }
@@ -137,7 +142,7 @@ final class HotKeySettings: ObservableObject {
         return fallbackKeyLabel(for: UInt32(event.keyCode))
     }
 
-    private static func fallbackKeyLabel(for keyCode: UInt32) -> String {
+    static func fallbackKeyLabel(for keyCode: UInt32) -> String {
         specialKeyLabels[UInt16(keyCode)] ?? "Key \(keyCode)"
     }
 

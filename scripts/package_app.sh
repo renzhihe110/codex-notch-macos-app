@@ -24,6 +24,9 @@ APP_VERSION="${APP_VERSION:-0.1.2}"
 BUILD_NUMBER="${BUILD_NUMBER:-2}"
 DIST_DIR="$APP_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
+INSTALLED_APP_BUNDLE="/Applications/$APP_NAME.app"
+STAGED_APP_BUNDLE="/Applications/.$APP_NAME.app.staging"
+PREVIOUS_APP_BUNDLE="/Applications/.$APP_NAME.app.previous"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -67,4 +70,15 @@ cp "$THIRD_PARTY_NOTICE" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
 
+# 先暂存新 bundle，再替换应用程序目录中的旧版本；替换失败会自动恢复旧副本。
+rm -rf "$STAGED_APP_BUNDLE" "$PREVIOUS_APP_BUNDLE"
+/usr/bin/ditto "$APP_BUNDLE" "$STAGED_APP_BUNDLE"
+if [[ -e "$INSTALLED_APP_BUNDLE" ]]; then mv "$INSTALLED_APP_BUNDLE" "$PREVIOUS_APP_BUNDLE"; fi
+if ! mv "$STAGED_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"; then
+    if [[ -e "$PREVIOUS_APP_BUNDLE" ]]; then mv "$PREVIOUS_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"; fi
+    echo "无法安装到: $INSTALLED_APP_BUNDLE" >&2
+    exit 67
+fi
+rm -rf "$PREVIOUS_APP_BUNDLE"
 echo "App 已生成: $APP_BUNDLE"
+echo "App 已安装: $INSTALLED_APP_BUNDLE"

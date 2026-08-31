@@ -149,6 +149,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private let onOpenSettings: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
+    private let onWillReveal: () -> Void
     private var localKeyEventMonitor: Any?
     private var localMouseEventMonitor: Any?
     private var globalMouseEventMonitor: Any?
@@ -166,7 +167,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 保存悬浮 Dashboard 尺寸，供窗口控制器和 SwiftUI 视图共享。
     private let floatingDashboardSettings = FloatingDashboardSettings.shared
 
-    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
+    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
         self.viewModel = NotchViewModel(state: initialState, collapsedHeight: collapsedSize.height)
         self.hotKeySettings = hotKeySettings
@@ -174,6 +175,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
+        self.onWillReveal = onWillReveal
         let window = KeyableBorderlessWindow(contentRect: CGRect(origin: .zero, size: collapsedSize), styleMask: [.borderless], backing: .buffered, defer: false)
         super.init(window: window)
         window.onLeftMouseDown = { [weak self] event in self?.handleLeftMouseDown(event) ?? false }
@@ -336,6 +338,12 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         setExpanded(false)
     }
 
+    // Xcode Dashboard 打开前只收起 Codex 展开面板，保留当前刘海或宠物入口模式。
+    func dismissDashboard() {
+        guard viewModel.isExpanded else { return }
+        setExpanded(false)
+    }
+
     // 记录宠物窗口，仅用于外部点击排除，不参与 Dashboard 定位。
     func setExternalEntryWindow(_ entryWindow: NSWindow) {
         externalEntryWindow = entryWindow
@@ -359,6 +367,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 统一展开入口，快捷键可额外指定 Dashboard 样式而不改变当前入口模式。
     private func reveal(anchorFrame: CGRect?, centersInScreen: Bool, expandedScale: CGFloat, presentsFloatingDashboard: Bool = false) {
+        onWillReveal()
         activeEntryAnchorFrame = anchorFrame
         centersExpandedPanel = centersInScreen
         viewModel.expandedScale = expandedScale
@@ -530,10 +539,10 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private func installGlobalHotKeyHandler() {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let installStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
-            guard let userData else { return noErr }
+            guard let userData else { return OSStatus(eventNotHandledErr) }
             var pressedHotKeyID = EventHotKeyID(signature: 0, id: 0)
             let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &pressedHotKeyID)
-            guard status == noErr, pressedHotKeyID.signature == OSType(0x434E4458), pressedHotKeyID.id == 1 else { return noErr }
+            guard status == noErr, pressedHotKeyID.signature == OSType(0x434E4458), pressedHotKeyID.id == 1 else { return OSStatus(eventNotHandledErr) }
             let controller = Unmanaged<NotchWindowController>.fromOpaque(userData).takeUnretainedValue()
             DispatchQueue.main.async {
                 controller.toggleForKeyboard()
