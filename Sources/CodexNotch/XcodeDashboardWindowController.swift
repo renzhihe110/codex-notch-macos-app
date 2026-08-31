@@ -8,26 +8,18 @@ private final class XcodeDashboardWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-// 独立管理 Xcode Dashboard 的窗口、刷新计时器和 Carbon 全局快捷键。
+// 独立管理 Xcode Dashboard 的窗口和刷新计时器，快捷键触发由 Codex 窗口控制器统一分发。
 final class XcodeDashboardWindowController: NSWindowController, NSWindowDelegate {
     private let manager = XcodeWindowManager()
     private let presentationState = XcodeDashboardPresentationState()
-    private let hotKeySettings: XcodeHotKeySettings
     private let onWillReveal: () -> Void
     private let onOpenSettings: () -> Void
     private var refreshTimer: Timer?
     private var localKeyEventMonitor: Any?
     private var localMouseEventMonitor: Any?
-    private var hotKeySettingsObserver: NSObjectProtocol?
-    private var hotKeyRef: EventHotKeyRef?
-    private var hotKeyHandlerRef: EventHandlerRef?
-    private var registeredHotKey: HotKey?
-    private static let hotKeySignature = OSType(0x58434458)
-    private static let hotKeyIdentifier: UInt32 = 2
 
-    // 初始化时直接注册独立 Xcode 快捷键，窗口保持隐藏直到用户触发。
-    init(hotKeySettings: XcodeHotKeySettings, onWillReveal: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
-        self.hotKeySettings = hotKeySettings
+    // 初始化独立窗口，窗口保持隐藏直到统一快捷键的双击分支触发。
+    init(onWillReveal: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
         self.onWillReveal = onWillReveal
         self.onOpenSettings = onOpenSettings
         let window = XcodeDashboardWindow(contentRect: CGRect(origin: .zero, size: XcodeDashboardMetrics.size), styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
@@ -43,28 +35,28 @@ final class XcodeDashboardWindowController: NSWindowController, NSWindowDelegate
         installWindowDragging()
     }
 
-    // 释放控制器时注销全部 Carbon 与 AppKit 监听，避免应用退出阶段残留回调。
+    // 释放控制器时注销 AppKit 监听，避免应用退出阶段残留回调。
     deinit {
         stopRefreshing()
         if let localKeyEventMonitor { NSEvent.removeMonitor(localKeyEventMonitor) }
         if let localMouseEventMonitor { NSEvent.removeMonitor(localMouseEventMonitor) }
-        if let hotKeySettingsObserver { NotificationCenter.default.removeObserver(hotKeySettingsObserver) }
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-        if let hotKeyHandlerRef { RemoveEventHandler(hotKeyHandlerRef) }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
-    // 快捷键采用显式 toggle，打开前先收起 Codex Dashboard 并刷新 Xcode 窗口列表。
+    // 快捷键采用显式 toggle，先显示缓存或加载态，再在首帧之后刷新 Xcode 窗口列表。
     func toggleForKeyboard() {
         guard window?.isVisible != true else { closeDashboard(); return }
         onWillReveal()
-        manager.refresh(requestPermission: true)
+        manager.prepareForReveal()
         positionOnPointerScreen()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        window?.displayIfNeeded()
         startRefreshing()
+        // 下一轮主队列再执行同步扫描，让 WindowServer 先接收并呈现 Dashboard 首帧。
+        DispatchQueue.main.async { [weak self] in guard let self, self.window?.isVisible == true else { return }; self.manager.refresh(requestPermission: true) }
     }
 
     // 互斥协调、快捷键关闭和关闭按钮都通过同一入口隐藏窗口，并清除当前图钉状态。
@@ -142,52 +134,12 @@ final class XcodeDashboardWindowController: NSWindowController, NSWindowDelegate
     // 权限按钮打开系统辅助功能设置，系统切换应用时窗口会通过失焦自动收起。
     private func openAccessibilitySettings() { guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }; NSWorkspace.shared.open(url) }
 
-    // 本地 Escape 与全局 Xcode 快捷键共用同一套键盘控制。
+    // Xcode 面板聚焦时只在本地处理 Escape，统一快捷键继续由 Codex 注册器接收。
     private func installKeyboardHandling() {
         localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             if event.keyCode == UInt16(kVK_Escape), self.window?.isKeyWindow == true { self.hide(); return nil }
-            if self.hotKeySettings.matches(event) { self.toggleForKeyboard(); return nil }
             return event
         }
-        hotKeySettingsObserver = NotificationCenter.default.addObserver(forName: XcodeHotKeySettings.changedNotification, object: hotKeySettings, queue: .main) { [weak self] _ in self?.reloadGlobalHotKey() }
-        installGlobalHotKeyHandler()
-        reloadGlobalHotKey()
-    }
-
-    // Carbon 回调只处理 Xcode 自己的签名，其他热键返回 eventNotHandledErr 继续传给 Codex 注册器。
-    private func installGlobalHotKeyHandler() {
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let installStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
-            guard let userData else { return OSStatus(eventNotHandledErr) }
-            var pressedHotKeyID = EventHotKeyID(signature: 0, id: 0)
-            let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &pressedHotKeyID)
-            guard status == noErr, pressedHotKeyID.signature == XcodeDashboardWindowController.hotKeySignature, pressedHotKeyID.id == XcodeDashboardWindowController.hotKeyIdentifier else { return OSStatus(eventNotHandledErr) }
-            let controller = Unmanaged<XcodeDashboardWindowController>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { controller.toggleForKeyboard() }
-            return noErr
-        }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandlerRef)
-        guard installStatus == noErr else { hotKeySettings.reportRegistrationFailure(); return }
-    }
-
-    // Xcode 快捷键注册使用独立签名和 ID，不复用 Codex 的 Carbon 标识。
-    private func registerConfiguredHotKey(_ hotKey: HotKey) -> EventHotKeyRef? {
-        guard hotKeyHandlerRef != nil else { return nil }
-        var registeredHotKeyRef: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.hotKeyIdentifier)
-        guard RegisterEventHotKey(hotKey.keyCode, hotKey.carbonModifiers, hotKeyID, GetApplicationEventTarget(), 0, &registeredHotKeyRef) == noErr else { return nil }
-        return registeredHotKeyRef
-    }
-
-    // 修改快捷键失败时恢复上一条已生效配置，避免设置页显示无法触发的组合键。
-    private func reloadGlobalHotKey() {
-        let requestedHotKey = hotKeySettings.hotKey
-        guard registeredHotKey != requestedHotKey else { hotKeySettings.clearRegistrationFailure(); return }
-        let previousHotKey = registeredHotKey
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }
-        if let newHotKeyRef = registerConfiguredHotKey(requestedHotKey) { hotKeyRef = newHotKeyRef; registeredHotKey = requestedHotKey; hotKeySettings.clearRegistrationFailure(); return }
-        if let previousHotKey, let restoredHotKeyRef = registerConfiguredHotKey(previousHotKey) { hotKeyRef = restoredHotKeyRef; registeredHotKey = previousHotKey; hotKeySettings.restoreAfterRegistrationFailure(previousHotKey); return }
-        registeredHotKey = nil
-        hotKeySettings.reportRegistrationFailure()
     }
 }

@@ -141,16 +141,16 @@ struct XcodeDashboardView: View {
     private var xcodeApplicationIcon: NSImage { let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") ?? URL(fileURLWithPath: "/Applications/Xcode.app"); return NSWorkspace.shared.icon(forFile: applicationURL.path) }
 
     // 空态图标严格对应当前状态，避免把权限问题误报成 Xcode 未启动。
-    private var availabilityIcon: String { switch manager.availability { case .permissionRequired: return "hand.raised.fill"; case .xcodeNotRunning: return "hammer"; case .noProjectWindows: return "macwindow"; case .ready: return "checkmark.circle" } }
+    private var availabilityIcon: String { switch manager.availability { case .loading: return "arrow.clockwise"; case .permissionRequired: return "hand.raised.fill"; case .xcodeNotRunning: return "hammer"; case .noProjectWindows: return "macwindow"; case .ready: return "checkmark.circle" } }
 
     // 空态标题使用用户可直接理解的短句。
-    private var availabilityTitle: String { switch manager.availability { case .permissionRequired: return "需要辅助功能权限"; case .xcodeNotRunning: return "Xcode 尚未运行"; case .noProjectWindows: return "暂无项目窗口"; case .ready: return "Xcode 窗口已就绪" } }
+    private var availabilityTitle: String { switch manager.availability { case .loading: return "正在读取 Xcode 窗口"; case .permissionRequired: return "需要辅助功能权限"; case .xcodeNotRunning: return "Xcode 尚未运行"; case .noProjectWindows: return "暂无项目窗口"; case .ready: return "Xcode 窗口已就绪" } }
 
     // 空态说明只给当前问题的下一步，不添加功能宣传。
-    private var availabilityMessage: String { switch manager.availability { case .permissionRequired: return "请允许 Codex Notch 读取并唤醒 Xcode 窗口"; case .xcodeNotRunning: return "打开 Xcode 项目后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 中打开一个 Project、Workspace 或 Package"; case .ready: return "点击项目即可切换" } }
+    private var availabilityMessage: String { switch manager.availability { case .loading: return "正在同步项目、分支与本地目录"; case .permissionRequired: return "请允许 Codex Notch 读取并唤醒 Xcode 窗口"; case .xcodeNotRunning: return "打开 Xcode 项目后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 中打开一个 Project、Workspace 或 Package"; case .ready: return "点击项目即可切换" } }
 
     // 底部提示说明行点击切换、顶部拖拽与边缘缩放，空态继续只展示当前可执行的下一步。
-    private var footerText: String { switch manager.availability { case .ready: return "点击行切换 · 拖动顶部移动 · 拖动边缘缩放"; case .permissionRequired: return "授权后重新按 Xcode 快捷键刷新窗口"; case .xcodeNotRunning: return "等待 Xcode 启动"; case .noProjectWindows: return "等待项目窗口打开" } }
+    private var footerText: String { switch manager.availability { case .loading: return "正在刷新 Xcode 窗口"; case .ready: return "点击行切换 · 拖动顶部移动 · 拖动边缘缩放"; case .permissionRequired: return "授权后重新触发面板快捷键刷新窗口"; case .xcodeNotRunning: return "等待 Xcode 启动"; case .noProjectWindows: return "等待项目窗口打开" } }
 }
 
 // 辅助功能设置按钮使用 Xcode 蓝色，保持空态唯一主操作清晰可见。

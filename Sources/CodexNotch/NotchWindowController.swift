@@ -149,6 +149,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private let onOpenSettings: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
+    private let onDoubleHotKey: () -> Void
     private let onWillReveal: () -> Void
     private var localKeyEventMonitor: Any?
     private var localMouseEventMonitor: Any?
@@ -157,6 +158,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
     private var registeredHotKey: HotKey?
+    private var lastHotKeyTriggerTime: TimeInterval?
     private var keepsCollapsedEntryVisible = true
     private var activeEntryAnchorFrame: CGRect?
     private weak var externalEntryWindow: NSWindow?
@@ -166,8 +168,10 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var preservesFloatingDashboardPosition = false
     // 保存悬浮 Dashboard 尺寸，供窗口控制器和 SwiftUI 视图共享。
     private let floatingDashboardSettings = FloatingDashboardSettings.shared
+    // 双击窗口足够覆盖自然连按，同时保持单次触发即时响应。
+    private static let doubleHotKeyInterval: TimeInterval = 0.4
 
-    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
+    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onDoubleHotKey: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
         self.viewModel = NotchViewModel(state: initialState, collapsedHeight: collapsedSize.height)
         self.hotKeySettings = hotKeySettings
@@ -175,6 +179,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
+        self.onDoubleHotKey = onDoubleHotKey
         self.onWillReveal = onWillReveal
         let window = KeyableBorderlessWindow(contentRect: CGRect(origin: .zero, size: collapsedSize), styleMask: [.borderless], backing: .buffered, defer: false)
         super.init(window: window)
@@ -336,6 +341,18 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         setExpanded(false)
+    }
+
+    // 第一次触发立即切换 Codex；400ms 内第二次触发改为切换 Xcode，并结束本轮双击识别。
+    private func handleHotKeyTrigger() {
+        let triggerTime = ProcessInfo.processInfo.systemUptime
+        if let lastHotKeyTriggerTime, triggerTime - lastHotKeyTriggerTime <= Self.doubleHotKeyInterval {
+            self.lastHotKeyTriggerTime = nil
+            onDoubleHotKey()
+            return
+        }
+        lastHotKeyTriggerTime = triggerTime
+        toggleForKeyboard()
     }
 
     // Xcode Dashboard 打开前只收起 Codex 展开面板，保留当前刘海或宠物入口模式。
@@ -545,7 +562,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             guard status == noErr, pressedHotKeyID.signature == OSType(0x434E4458), pressedHotKeyID.id == 1 else { return OSStatus(eventNotHandledErr) }
             let controller = Unmanaged<NotchWindowController>.fromOpaque(userData).takeUnretainedValue()
             DispatchQueue.main.async {
-                controller.toggleForKeyboard()
+                controller.handleHotKeyTrigger()
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandlerRef)
@@ -594,7 +611,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 展开面板时接管方向键、回车和 Escape，其他按键继续交给系统处理。
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         if hotKeySettings.matches(event) {
-            toggleForKeyboard()
+            handleHotKeyTrigger()
             return true
         }
         guard viewModel.isExpanded, window?.isKeyWindow == true else { return false }

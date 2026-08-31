@@ -112,7 +112,7 @@ final class HotKeySettings: ObservableObject {
         return modifiers
     }
 
-    // Codex 与 Xcode 快捷键共享同一录制规则，避免两个设置入口对修饰键和按键名称产生不同解释。
+    // 设置页录制和全局注册共享同一解析规则，避免修饰键和按键名称产生不同解释。
     static func recordedHotKey(from event: NSEvent) -> HotKey? {
         let modifiers = carbonModifiers(from: event.modifierFlags)
         guard hasRequiredModifier(modifiers) else { return nil }

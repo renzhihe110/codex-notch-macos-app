@@ -28,7 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let jumpRouter = JumpRouter()
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
-    private let xcodeHotKeySettings = XcodeHotKeySettings.shared
     private let capsuleSettings = CapsuleSettings.shared
     private let completionPopupSettings = CompletionPopupSettings.shared
     private let petCatalog = CodexPetCatalog.shared
@@ -38,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var completionPopupController = CompletionPopupController(settings: completionPopupSettings, onOpenSession: { [weak self] session in
         self?.jump(to: session)
     })
-    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, xcodeHotKeySettings: xcodeHotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog)
+    private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog)
     private var refreshTimer: Timer?
     private var isRefreshInFlight = false
     private var hasLoadedInitialSnapshot = false
@@ -56,12 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }, onToggleMode: { [weak self] in
             self?.toggleDisplayMode()
+        }, onDoubleHotKey: { [weak self] in
+            self?.xcodeDashboardWindowController?.toggleForKeyboard()
         }, onWillReveal: { [weak self] in
             self?.xcodeDashboardWindowController?.hide()
         })
         notchWindowController = controller
-        // Xcode Dashboard 使用独立窗口和快捷键，打开前只负责收起当前 Codex 展开面板。
-        xcodeDashboardWindowController = XcodeDashboardWindowController(hotKeySettings: xcodeHotKeySettings, onWillReveal: { [weak self] in
+        // Xcode Dashboard 由统一快捷键的双击分支唤醒，打开前只负责收起当前 Codex 展开面板。
+        xcodeDashboardWindowController = XcodeDashboardWindowController(onWillReveal: { [weak self] in
             self?.notchWindowController?.dismissDashboard()
         }, onOpenSettings: { [weak self] in
             self?.openSettings()
@@ -195,7 +196,7 @@ private enum EntryDisplayMode {
 
 // 持有独立设置窗口，确保无 Dock 和菜单栏入口的 accessory app 也能从右键菜单打开设置。
 private final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(settings: HotKeySettings, xcodeHotKeySettings: XcodeHotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, petCatalog: CodexPetCatalog) {
+    init(settings: HotKeySettings, capsuleSettings: CapsuleSettings, completionPopupSettings: CompletionPopupSettings, petCatalog: CodexPetCatalog) {
         // 使用 UI 稿对应的高窄比例和沉浸式标题栏，较小屏幕仍可通过内容滚动访问全部设置。
         let contentSize = CGSize(width: 470, height: 838)
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -213,7 +214,7 @@ private final class SettingsWindowController: NSWindowController, NSWindowDelega
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, xcodeHotKeySettings: xcodeHotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog))
+        window.contentView = NSHostingView(rootView: SettingsView(settings: settings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog))
         super.init(window: window)
         window.delegate = self
     }

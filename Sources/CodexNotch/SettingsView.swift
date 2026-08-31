@@ -18,16 +18,9 @@ private enum SettingsPalette {
     static let zoomButton = Color(red: 0.20, green: 0.74, blue: 0.34)
 }
 
-// 设置页只允许同时录制一个快捷键，明确区分 Codex 与 Xcode 两个独立目标。
-private enum HotKeyRecordingTarget: Equatable {
-    case codex
-    case xcode
-}
-
 // 按照深色单卡片 UI 稿组织设置项，并保留现有设置的即时预览能力。
 struct SettingsView: View {
     @ObservedObject var settings: HotKeySettings
-    @ObservedObject var xcodeHotKeySettings: XcodeHotKeySettings
     @ObservedObject var capsuleSettings: CapsuleSettings
     @ObservedObject var completionPopupSettings: CompletionPopupSettings
     @ObservedObject var petCatalog: CodexPetCatalog
@@ -39,13 +32,12 @@ struct SettingsView: View {
     @StateObject private var updateChecker = GitHubUpdateChecker()
     // 颜色面板控制器负责可靠显示 AppKit 调色板并连续回传用户选色。
     @StateObject private var directoryColorPanelController = DirectoryColorPanelController()
-    @State private var recordingTarget: HotKeyRecordingTarget?
+    @State private var isRecordingHotKey = false
     @State private var eventMonitor: Any?
     // 保存窗口打开时的设置快照，让底部“取消”可以真实回滚即时预览。
     @State private var originalFontName: String?
     @State private var originalDirectoryColor: Color?
     @State private var originalHotKey: HotKey?
-    @State private var originalXcodeHotKey: HotKey?
     @State private var originalCapsuleSize: CapsuleSize?
     @State private var originalPetOptionID: String?
     @State private var originalDismissDelaySeconds: Int?
@@ -165,22 +157,19 @@ struct SettingsView: View {
         }
     }
 
-    // 快捷键分区分别展示 Codex 与 Xcode 当前按键、录制和局部恢复动作。
+    // Codex 与 Xcode 共享同一快捷键，单次和双次触发由主窗口控制器区分。
     private var hotKeySection: some View {
         settingsSection(icon: "keyboard", title: "快捷键", spacing: 14, verticalPadding: 16) {
-            hotKeyRow(title: "Codex 面板", hotKey: settings.hotKey, target: .codex) { settings.resetToDefault() }
-            hotKeyRow(title: "Xcode 面板", hotKey: xcodeHotKeySettings.hotKey, target: .xcode) { xcodeHotKeySettings.resetToDefault() }
+            hotKeyRow(title: "面板快捷键", hotKey: settings.hotKey) { settings.resetToDefault() }
+            Text("按一次打开 Codex，400ms 内连按两次打开 Xcode")
+                .font(fontSettings.font(size: 11))
+                .foregroundStyle(SettingsPalette.secondaryText)
             if let validationMessage = settings.validationMessage {
                 Text(validationMessage)
                     .font(fontSettings.font(size: 11))
                     .foregroundStyle(Color.red.opacity(0.88))
             }
-            if let validationMessage = xcodeHotKeySettings.validationMessage {
-                Text(validationMessage)
-                    .font(fontSettings.font(size: 11))
-                    .foregroundStyle(Color.red.opacity(0.88))
-            }
-            if recordingTarget != nil {
+            if isRecordingHotKey {
                 Text("请按下新快捷键，按 Esc 取消录制")
                     .font(fontSettings.font(size: 11))
                     .foregroundStyle(SettingsPalette.secondaryText)
@@ -188,13 +177,13 @@ struct SettingsView: View {
         }
     }
 
-    // 两个快捷键使用相同的录制行视觉，但保存、默认值和全局注册器保持完全独立。
-    private func hotKeyRow(title: String, hotKey: HotKey, target: HotKeyRecordingTarget, reset: @escaping () -> Void) -> some View {
+    // 单一录制行同时配置两个面板的触发组合，避免相同快捷键发生重复注册。
+    private func hotKeyRow(title: String, hotKey: HotKey, reset: @escaping () -> Void) -> some View {
         HStack(spacing: 9) {
             Text(title)
             Spacer(minLength: 8)
             Text(hotKey.displayText).font(fontSettings.font(size: 13, weight: .medium)).frame(minWidth: 62, minHeight: 32).background(controlSurface)
-            Button(recordingTarget == target ? "按键中…" : "录制") { toggleRecording(for: target) }.buttonStyle(SettingsSecondaryButtonStyle(minWidth: 58))
+            Button(isRecordingHotKey ? "按键中…" : "录制") { toggleRecording() }.buttonStyle(SettingsSecondaryButtonStyle(minWidth: 58))
             Button("恢复默认") { stopRecording(); reset() }.buttonStyle(SettingsSecondaryButtonStyle(minWidth: 76))
         }
     }
@@ -408,7 +397,6 @@ struct SettingsView: View {
         originalFontName = fontSettings.selectedFontName
         originalDirectoryColor = directoryColorSettings.color
         originalHotKey = settings.hotKey
-        originalXcodeHotKey = xcodeHotKeySettings.hotKey
         originalCapsuleSize = capsuleSettings.size
         originalPetOptionID = petCatalog.selectedOptionID
         originalDismissDelaySeconds = completionPopupSettings.dismissDelaySeconds
@@ -421,13 +409,12 @@ struct SettingsView: View {
         closeWindow()
     }
 
-    // 取消依次恢复窗口打开时的七项设置，再关闭窗口。
+    // 取消依次恢复窗口打开时的六项设置，再关闭窗口。
     private func cancelChanges() {
         stopRecording()
         if let originalFontName { fontSettings.select(fontName: originalFontName) }
         if let originalDirectoryColor { directoryColorSettings.update(color: originalDirectoryColor) }
         if let originalHotKey { settings.restore(hotKey: originalHotKey) }
-        if let originalXcodeHotKey { xcodeHotKeySettings.restore(hotKey: originalXcodeHotKey) }
         if let originalCapsuleSize { capsuleSettings.select(size: originalCapsuleSize) }
         if let originalPetOptionID { petCatalog.select(optionID: originalPetOptionID) }
         if let originalDismissDelaySeconds { completionPopupSettings.updateDismissDelaySeconds(originalDismissDelaySeconds) }
@@ -440,7 +427,6 @@ struct SettingsView: View {
         fontSettings.select(fontName: FontSettings.systemFontName)
         directoryColorSettings.update(color: Color.white.opacity(0.54))
         settings.resetToDefault()
-        xcodeHotKeySettings.resetToDefault()
         capsuleSettings.select(size: .regular)
         petCatalog.select(optionID: CodexPetTheme.suitSwimming.selectionID)
         completionPopupSettings.updateDismissDelaySeconds(3)
@@ -450,24 +436,18 @@ struct SettingsView: View {
     private func closeWindow() { NSApp.keyWindow?.close() }
 
     // 录制期间只监听设置窗口的 keyDown，合法组合键会立即刷新显示。
-    private func toggleRecording(for target: HotKeyRecordingTarget) { recordingTarget == target ? stopRecording() : startRecording(target) }
+    private func toggleRecording() { isRecordingHotKey ? stopRecording() : startRecording() }
 
     // 新快捷键必须包含 Command、Option 或 Control，Esc 只退出录制不关闭窗口。
-    private func startRecording(_ target: HotKeyRecordingTarget) {
+    private func startRecording() {
         stopRecording()
-        recordingTarget = target
+        isRecordingHotKey = true
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == UInt16(kVK_Escape) {
                 stopRecording()
                 return nil
             }
-            let didUpdate: Bool
-            switch target {
-            case .codex:
-                didUpdate = settings.update(from: event)
-            case .xcode:
-                didUpdate = xcodeHotKeySettings.update(from: event)
-            }
+            let didUpdate = settings.update(from: event)
             if didUpdate { stopRecording() }
             return nil
         }
@@ -479,7 +459,7 @@ struct SettingsView: View {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
         }
-        recordingTarget = nil
+        isRecordingHotKey = false
     }
 }
 

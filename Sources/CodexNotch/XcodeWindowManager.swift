@@ -16,8 +16,9 @@ struct XcodeWindowItem: Identifiable {
     let isCurrent: Bool
 }
 
-// 区分权限、进程和窗口为空三种状态，让 Dashboard 给出准确的下一步提示。
+// 区分加载、权限、进程和窗口为空状态，让 Dashboard 给出准确的下一步提示。
 enum XcodeWindowAvailability: Equatable {
+    case loading
     case ready
     case permissionRequired
     case xcodeNotRunning
@@ -27,11 +28,14 @@ enum XcodeWindowAvailability: Equatable {
 // 通过 macOS Accessibility API 只读发现 Xcode 项目窗口，并负责把用户点击的窗口提升到前台。
 final class XcodeWindowManager: ObservableObject {
     @Published private(set) var windows: [XcodeWindowItem] = []
-    @Published private(set) var availability: XcodeWindowAvailability = .noProjectWindows
+    @Published private(set) var availability: XcodeWindowAvailability = .loading
     @Published private(set) var actionErrorMessage: String?
     private let fileManager = FileManager.default
     private let xcodeBundleIdentifier = "com.apple.dt.Xcode"
     private let ignoredWindowTitleFragments = ["settings", "preferences", "organizer", "devices and simulators", "documentation", "welcome to xcode", "设置", "偏好设置", "组织器", "设备与模拟器", "文档", "欢迎使用 xcode"]
+
+    // 面板重新显示时保留上一次窗口快照，只清理已经过期的点击错误提示。
+    func prepareForReveal() { actionErrorMessage = nil }
 
     // 每次打开 Dashboard 时请求一次权限，显示期间的定时刷新只检查现有授权状态。
     func refresh(requestPermission: Bool = false) {
