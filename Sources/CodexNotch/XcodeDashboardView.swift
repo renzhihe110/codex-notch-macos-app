@@ -29,6 +29,10 @@ struct XcodeDashboardView: View {
     let onOpenAccessibilitySettings: () -> Void
     @ObservedObject private var fontSettings = FontSettings.shared
     @State private var hoveredWindowID: String?
+    // Xcode 与 VS Code 图标只在进程初始化时读取一次，滚动重绘不再反复解码图标文件。
+    private static let xcodeApplicationIcon: NSImage = { let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") ?? URL(fileURLWithPath: "/Applications/Xcode.app"); return NSWorkspace.shared.icon(forFile: applicationURL.path) }()
+    private static let vsCodeApplicationIcon: NSImage = { let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") ?? URL(fileURLWithPath: "/Applications/Visual Studio Code.app"); return NSImage(contentsOf: applicationURL.appendingPathComponent("Contents/Resources/Code.icns")) ?? NSWorkspace.shared.icon(forFile: applicationURL.path) }()
+    private static let fallbackApplicationIcon = NSWorkspace.shared.icon(for: .applicationBundle)
 
     // 独立窗口只包含标题、项目列表和操作提示，不复用 Codex 任务状态或 Token 信息。
     var body: some View {
@@ -47,16 +51,16 @@ struct XcodeDashboardView: View {
         .preferredColorScheme(.dark)
     }
 
-    // 标题栏使用真实 Xcode 图标和蓝灰数量标签，与 Codex 悬浮助手形成明确区分。
+    // 标题栏使用通用编辑器图标和蓝灰数量标签，与 Codex 悬浮助手形成明确区分。
     private var dashboardHeader: some View {
         HStack(spacing: 9) {
-            Image(nsImage: xcodeApplicationIcon).resizable().scaledToFit().frame(width: 24, height: 24)
-            Text("Xcode 窗口助手").font(fontSettings.font(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
+            Image(systemName: "chevron.left.forwardslash.chevron.right").font(fontSettings.font(size: 20, weight: .semibold)).foregroundStyle(Color(red: 0.44, green: 0.76, blue: 1.0)).frame(width: 24, height: 24)
+            Text("IDE 窗口助手").font(fontSettings.font(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
             Text("\(manager.windows.count) 个窗口").font(fontSettings.font(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.55)).padding(.horizontal, 8).frame(height: 26).background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.055))).overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
             Spacer(minLength: 0)
             headerButton(systemName: presentationState.isPinned ? "pin.fill" : "pin", help: presentationState.isPinned ? "取消常驻" : "常驻面板", isActive: presentationState.isPinned, action: onTogglePin)
             headerButton(systemName: "gearshape", help: "打开设置", action: onOpenSettings)
-            headerButton(systemName: "xmark", help: "关闭 Xcode 窗口助手", action: onClose)
+            headerButton(systemName: "xmark", help: "关闭 IDE 窗口助手", action: onClose)
         }
         .padding(.horizontal, 20)
     }
@@ -89,7 +93,7 @@ struct XcodeDashboardView: View {
         Button { onSelectWindow(item) } label: {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 2, style: .continuous).fill(Color(red: 0.44, green: 0.76, blue: 1.0)).frame(width: 4, height: 42).opacity(item.isCurrent ? 1 : 0)
-                Image(nsImage: xcodeApplicationIcon).resizable().scaledToFit().frame(width: 30, height: 30)
+                Image(nsImage: editorApplicationIcon(for: item)).resizable().scaledToFit().frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.projectName).font(fontSettings.font(size: 19.5, weight: .medium)).foregroundStyle(.white.opacity(0.94)).lineLimit(1)
                     // 第二行优先展示分支与本地仓库目录，悬停提示保留原有当前文件信息。
@@ -107,7 +111,7 @@ struct XcodeDashboardView: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered in hoveredWindowID = isHovered ? item.id : (hoveredWindowID == item.id ? nil : hoveredWindowID) }
-        .accessibilityLabel("切换到 Xcode 项目 " + item.projectName + "，分支 " + (item.branchName ?? "非 Git 项目") + "，目录 " + (item.localDirectory ?? item.detail))
+        .accessibilityLabel("切换到 \(item.editorName) 项目 " + item.projectName + "，分支 " + (item.branchName ?? "非 Git 项目") + "，目录 " + (item.localDirectory ?? item.detail))
     }
 
     // 没有列表时根据实际状态显示权限、进程或项目窗口提示。
@@ -137,20 +141,20 @@ struct XcodeDashboardView: View {
     // 标题栏按钮与 Codex 面板统一为 26pt 点击区域、13pt 图标和图钉选中态。
     private func headerButton(systemName: String, help: String, isActive: Bool = false, action: @escaping () -> Void) -> some View { Button(action: action) { Image(systemName: systemName).font(fontSettings.font(size: 13, weight: .semibold)).foregroundStyle(isActive ? Color(red: 0.44, green: 0.76, blue: 1.0) : .white.opacity(0.66)).frame(width: 26, height: 26).background(Circle().fill(isActive ? Color(red: 0.08, green: 0.28, blue: 0.68).opacity(0.70) : Color.clear)).contentShape(Rectangle()) }.buttonStyle(.plain).help(help) }
 
-    // 优先读取当前安装的 Xcode App 图标，标准路径只作为 LaunchServices 无结果时的兜底。
-    private var xcodeApplicationIcon: NSImage { let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") ?? URL(fileURLWithPath: "/Applications/Xcode.app"); return NSWorkspace.shared.icon(forFile: applicationURL.path) }
+    // 行渲染只读取缓存图标，避免滚动时访问 LaunchServices 或解码应用资源。
+    private func editorApplicationIcon(for item: XcodeWindowItem) -> NSImage { switch item.bundleIdentifier { case "com.apple.dt.Xcode": return Self.xcodeApplicationIcon; case "com.microsoft.VSCode": return Self.vsCodeApplicationIcon; default: return Self.fallbackApplicationIcon } }
 
-    // 空态图标严格对应当前状态，避免把权限问题误报成 Xcode 未启动。
-    private var availabilityIcon: String { switch manager.availability { case .loading: return "arrow.clockwise"; case .permissionRequired: return "hand.raised.fill"; case .xcodeNotRunning: return "hammer"; case .noProjectWindows: return "macwindow"; case .ready: return "checkmark.circle" } }
+    // 空态图标严格对应当前状态，避免把权限问题误报成编辑器未启动。
+    private var availabilityIcon: String { switch manager.availability { case .loading: return "arrow.clockwise"; case .permissionRequired: return "hand.raised.fill"; case .noSupportedEditorsRunning: return "chevron.left.forwardslash.chevron.right"; case .noProjectWindows: return "macwindow"; case .ready: return "checkmark.circle" } }
 
     // 空态标题使用用户可直接理解的短句。
-    private var availabilityTitle: String { switch manager.availability { case .loading: return "正在读取 Xcode 窗口"; case .permissionRequired: return "需要辅助功能权限"; case .xcodeNotRunning: return "Xcode 尚未运行"; case .noProjectWindows: return "暂无项目窗口"; case .ready: return "Xcode 窗口已就绪" } }
+    private var availabilityTitle: String { switch manager.availability { case .loading: return "正在读取 IDE 窗口"; case .permissionRequired: return "需要辅助功能权限"; case .noSupportedEditorsRunning: return "Xcode 或 VS Code 尚未运行"; case .noProjectWindows: return "暂无项目窗口"; case .ready: return "IDE 窗口已就绪" } }
 
     // 空态说明只给当前问题的下一步，不添加功能宣传。
-    private var availabilityMessage: String { switch manager.availability { case .loading: return "正在同步项目、分支与本地目录"; case .permissionRequired: return "请允许 Codex Notch 读取并唤醒 Xcode 窗口"; case .xcodeNotRunning: return "打开 Xcode 项目后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 中打开一个 Project、Workspace 或 Package"; case .ready: return "点击项目即可切换" } }
+    private var availabilityMessage: String { switch manager.availability { case .loading: return "正在同步项目、分支与本地目录"; case .permissionRequired: return "请允许 Codex Notch 读取并唤醒编辑器窗口"; case .noSupportedEditorsRunning: return "打开 Xcode 项目或 VS Code 工作区后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 或 VS Code 中打开项目或工作区"; case .ready: return "点击项目即可切换" } }
 
     // 底部提示说明行点击切换、顶部拖拽与边缘缩放，空态继续只展示当前可执行的下一步。
-    private var footerText: String { switch manager.availability { case .loading: return "正在刷新 Xcode 窗口"; case .ready: return "点击行切换 · 拖动顶部移动 · 拖动边缘缩放"; case .permissionRequired: return "授权后重新触发面板快捷键刷新窗口"; case .xcodeNotRunning: return "等待 Xcode 启动"; case .noProjectWindows: return "等待项目窗口打开" } }
+    private var footerText: String { switch manager.availability { case .loading: return "正在刷新 IDE 窗口"; case .ready: return "点击行切换 · 拖动顶部移动 · 拖动边缘缩放"; case .permissionRequired: return "授权后重新触发面板快捷键刷新窗口"; case .noSupportedEditorsRunning: return "等待 Xcode 或 VS Code 启动"; case .noProjectWindows: return "等待项目窗口打开" } }
 }
 
 // 辅助功能设置按钮使用 Xcode 蓝色，保持空态唯一主操作清晰可见。

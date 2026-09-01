@@ -7,6 +7,8 @@ import Foundation
 struct XcodeWindowItem: Identifiable {
     let id: String
     let processIdentifier: pid_t
+    let bundleIdentifier: String
+    let editorName: String
     let element: AXUIElement
     let projectName: String
     let detail: String
@@ -21,46 +23,53 @@ enum XcodeWindowAvailability: Equatable {
     case loading
     case ready
     case permissionRequired
-    case xcodeNotRunning
+    case noSupportedEditorsRunning
     case noProjectWindows
 }
 
-// 通过 macOS Accessibility API 只读发现 Xcode 项目窗口，并负责把用户点击的窗口提升到前台。
+// 通过 macOS Accessibility API 只读发现 Xcode 和 VS Code 窗口，并负责把用户点击的窗口提升到前台。
 final class XcodeWindowManager: ObservableObject {
     @Published private(set) var windows: [XcodeWindowItem] = []
     @Published private(set) var availability: XcodeWindowAvailability = .loading
     @Published private(set) var actionErrorMessage: String?
     private let fileManager = FileManager.default
-    private let xcodeBundleIdentifier = "com.apple.dt.Xcode"
+    // 仅维护当前面板明确支持的编辑器，避免将普通应用窗口混入项目列表。
+    private let supportedEditors = [(bundleIdentifier: "com.apple.dt.Xcode", name: "Xcode"), (bundleIdentifier: "com.microsoft.VSCode", name: "VS Code")]
     private let ignoredWindowTitleFragments = ["settings", "preferences", "organizer", "devices and simulators", "documentation", "welcome to xcode", "设置", "偏好设置", "组织器", "设备与模拟器", "文档", "欢迎使用 xcode"]
+    // 面板每次显示期间复用文档的 Git 信息，避免每秒为同一窗口重复启动 Git 子进程。
+    private var repositoryInfoCache: [String: (branchName: String?, localDirectory: String?)] = [:]
 
     // 面板重新显示时保留上一次窗口快照，只清理已经过期的点击错误提示。
-    func prepareForReveal() { actionErrorMessage = nil }
+    func prepareForReveal() { if actionErrorMessage != nil { actionErrorMessage = nil }; repositoryInfoCache = [:] }
 
     // 每次打开 Dashboard 时请求一次权限，显示期间的定时刷新只检查现有授权状态。
     func refresh(requestPermission: Bool = false) {
-        actionErrorMessage = nil
+        if actionErrorMessage != nil { actionErrorMessage = nil }
         guard isAccessibilityTrusted(requestPermission: requestPermission) else { windows = []; availability = .permissionRequired; return }
-        let runningApplications = NSRunningApplication.runningApplications(withBundleIdentifier: xcodeBundleIdentifier).filter { !$0.isTerminated }
-        guard !runningApplications.isEmpty else { windows = []; availability = .xcodeNotRunning; return }
-        windows = runningApplications.flatMap(windowItems(for:)).sorted { lhs, rhs in
+        let runningApplications = supportedEditors.flatMap { editor in NSRunningApplication.runningApplications(withBundleIdentifier: editor.bundleIdentifier).filter { !$0.isTerminated }.map { (application: $0, editorName: editor.name) } }
+        guard !runningApplications.isEmpty else { windows = []; availability = .noSupportedEditorsRunning; return }
+        let refreshedWindows = runningApplications.flatMap { windowItems(for: $0.application, editorName: $0.editorName) }.sorted { lhs, rhs in
+            if lhs.editorName != rhs.editorName { return lhs.editorName == "Xcode" }
             if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
             return lhs.projectName.localizedCaseInsensitiveCompare(rhs.projectName) == .orderedAscending
         }
-        availability = windows.isEmpty ? .noProjectWindows : .ready
+        let refreshedAvailability: XcodeWindowAvailability = refreshedWindows.isEmpty ? .noProjectWindows : .ready
+        guard !hasSameWindowPresentation(refreshedWindows, windows) || refreshedAvailability != availability else { return }
+        windows = refreshedWindows
+        availability = refreshedAvailability
     }
 
-    // 激活 Xcode 进程后设置聚焦窗口并执行 AXRaise，确保切到具体项目而不是只唤醒应用。
+    // 激活编辑器进程后设置聚焦窗口并执行 AXRaise，确保切到具体项目而不是只唤醒应用。
     @discardableResult func activate(_ item: XcodeWindowItem) -> Bool {
-        guard AXIsProcessTrusted() else { actionErrorMessage = "缺少辅助功能权限，无法切换 Xcode 窗口"; return false }
-        guard let runningApplication = NSRunningApplication.runningApplications(withBundleIdentifier: xcodeBundleIdentifier).first(where: { $0.processIdentifier == item.processIdentifier && !$0.isTerminated }) else { actionErrorMessage = "Xcode 已关闭，请重新打开项目"; return false }
+        guard AXIsProcessTrusted() else { actionErrorMessage = "缺少辅助功能权限，无法切换编辑器窗口"; return false }
+        guard let runningApplication = NSRunningApplication.runningApplications(withBundleIdentifier: item.bundleIdentifier).first(where: { $0.processIdentifier == item.processIdentifier && !$0.isTerminated }) else { actionErrorMessage = "\(item.editorName) 已关闭，请重新打开窗口"; return false }
         let applicationElement = AXUIElementCreateApplication(item.processIdentifier)
         runningApplication.activate(options: [.activateIgnoringOtherApps])
         AXUIElementSetAttributeValue(item.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         let focusStatus = AXUIElementSetAttributeValue(applicationElement, kAXFocusedWindowAttribute as CFString, item.element)
         let mainStatus = AXUIElementSetAttributeValue(item.element, kAXMainAttribute as CFString, kCFBooleanTrue)
         let raiseStatus = AXUIElementPerformAction(item.element, kAXRaiseAction as CFString)
-        guard focusStatus == .success || mainStatus == .success || raiseStatus == .success else { refresh(); actionErrorMessage = "Xcode 窗口已变化，请重新选择"; return false }
+        guard focusStatus == .success || mainStatus == .success || raiseStatus == .success else { refresh(); actionErrorMessage = "\(item.editorName) 窗口已变化，请重新选择"; return false }
         actionErrorMessage = nil
         return true
     }
@@ -72,8 +81,8 @@ final class XcodeWindowManager: ObservableObject {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    // 单个 Xcode 进程可能有多个项目窗口，只保留带编辑文档或项目特征的标准窗口。
-    private func windowItems(for application: NSRunningApplication) -> [XcodeWindowItem] {
+    // 单个编辑器进程可能有多个项目窗口，只保留与对应编辑器特征匹配的标准窗口。
+    private func windowItems(for application: NSRunningApplication, editorName: String) -> [XcodeWindowItem] {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         guard let windowElements: [AXUIElement] = attributeValue(kAXWindowsAttribute as CFString, from: applicationElement) else { return [] }
         let focusedWindow: AXUIElement? = attributeValue(kAXFocusedWindowAttribute as CFString, from: applicationElement)
@@ -81,29 +90,31 @@ final class XcodeWindowManager: ObservableObject {
             guard let title = stringAttribute(kAXTitleAttribute as CFString, from: window)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
             let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: window)
             let document = stringAttribute(kAXDocumentAttribute as CFString, from: window)
-            guard isProjectWindow(title: title, subrole: subrole, document: document) else { return nil }
-            let displayInfo = displayInfo(title: title, document: document)
+            guard isProjectWindow(title: title, subrole: subrole, document: document, editorName: editorName) else { return nil }
+            let displayInfo = displayInfo(title: title, document: document, editorName: editorName)
             let repositoryInfo = repositoryInfo(for: document)
             let identifier = "\(application.processIdentifier):\(CFHash(window))"
-            return XcodeWindowItem(id: identifier, processIdentifier: application.processIdentifier, element: window, projectName: displayInfo.projectName, detail: displayInfo.detail, branchName: repositoryInfo.branchName, localDirectory: repositoryInfo.localDirectory, screenLabel: screenLabel(for: window), isCurrent: focusedWindow.map { CFEqual($0, window) } ?? false)
+            return XcodeWindowItem(id: identifier, processIdentifier: application.processIdentifier, bundleIdentifier: application.bundleIdentifier ?? "", editorName: editorName, element: window, projectName: displayInfo.projectName, detail: displayInfo.detail, branchName: repositoryInfo.branchName, localDirectory: repositoryInfo.localDirectory, screenLabel: screenLabel(for: window), isCurrent: focusedWindow.map { CFEqual($0, window) } ?? false)
         }
     }
 
-    // Xcode 的设置、Organizer 和文档窗口同样是标准窗口，需要通过标题和 AXDocument 进一步排除。
-    private func isProjectWindow(title: String, subrole: String?, document: String?) -> Bool {
+    // Xcode 和 VS Code 的设置窗口同样是标准窗口，需要通过标题和 AXDocument 进一步排除。
+    private func isProjectWindow(title: String, subrole: String?, document: String?, editorName: String) -> Bool {
         guard subrole == (kAXStandardWindowSubrole as String) else { return false }
         let normalizedTitle = title.lowercased()
         guard !ignoredWindowTitleFragments.contains(where: normalizedTitle.contains) else { return false }
         let normalizedDocument = document?.lowercased() ?? ""
+        if editorName == "VS Code" { return true }
         let hasProjectContainer = normalizedTitle.contains(".xcworkspace") || normalizedTitle.contains(".xcodeproj") || normalizedDocument.contains(".xcworkspace") || normalizedDocument.contains(".xcodeproj")
         let hasEditorDocument = document?.isEmpty == false
         let hasEditorSeparator = title.contains(" — ") || title.contains(" – ")
         return hasProjectContainer || hasEditorDocument || hasEditorSeparator
     }
 
-    // 优先从文档路径识别 workspace/project，再用窗口标题补齐当前文件信息。
-    private func displayInfo(title: String, document: String?) -> (projectName: String, detail: String) {
+    // VS Code 标题固定取编辑器标识前一段作为项目目录，Xcode 继续用文档路径补齐当前文件信息。
+    private func displayInfo(title: String, document: String?, editorName: String) -> (projectName: String, detail: String) {
         let titleParts = normalizedTitleParts(title)
+        if editorName == "VS Code" { let projectName = titleParts.count > 1 ? titleParts[titleParts.count - 2] : (titleParts.first ?? title); return (projectName, projectName) }
         let projectContainer = projectContainerName(from: document)
         let documentLeaf = documentFileName(from: document)
         let fallbackProjectPart = titleParts.first(where: { !looksLikeSourceFile($0) }) ?? titleParts.first ?? title
@@ -115,8 +126,11 @@ final class XcodeWindowManager: ObservableObject {
         return (projectName, details.isEmpty ? title : details.prefix(2).joined(separator: " · "))
     }
 
-    // 根据当前文档向上定位 Git 仓库，并返回分支名与可读的本地根目录。
-    private func repositoryInfo(for document: String?) -> (branchName: String?, localDirectory: String?) { guard let documentURL = documentURL(from: document) else { return (nil, nil) }; let workingDirectory = projectDirectory(for: documentURL); guard let repositoryRoot = gitOutput(arguments: ["-C", workingDirectory.path, "rev-parse", "--show-toplevel"]) else { return (nil, shortenedPath(workingDirectory)) }; let branchName = gitOutput(arguments: ["-C", repositoryRoot, "branch", "--show-current"]); return (branchName?.isEmpty == false ? branchName : "Detached HEAD", shortenedPath(URL(fileURLWithPath: repositoryRoot))) }
+    // 根据当前文档向上定位 Git 仓库，并在当前面板显示期间缓存分支和本地根目录。
+    private func repositoryInfo(for document: String?) -> (branchName: String?, localDirectory: String?) { guard let document, !document.isEmpty else { return (nil, nil) }; if let cachedInfo = repositoryInfoCache[document] { return cachedInfo }; guard let documentURL = documentURL(from: document) else { return (nil, nil) }; let workingDirectory = projectDirectory(for: documentURL); let repositoryInfo: (branchName: String?, localDirectory: String?); if let repositoryRoot = gitOutput(arguments: ["-C", workingDirectory.path, "rev-parse", "--show-toplevel"]) { let branchName = gitOutput(arguments: ["-C", repositoryRoot, "branch", "--show-current"]); repositoryInfo = (branchName?.isEmpty == false ? branchName : "Detached HEAD", shortenedPath(URL(fileURLWithPath: repositoryRoot))) } else { repositoryInfo = (nil, shortenedPath(workingDirectory)) }; repositoryInfoCache[document] = repositoryInfo; return repositoryInfo }
+
+    // 列表只比较影响画面的字段，AXUIElement 每次读取可能是新引用，不应触发无意义的 SwiftUI 刷新。
+    private func hasSameWindowPresentation(_ lhs: [XcodeWindowItem], _ rhs: [XcodeWindowItem]) -> Bool { guard lhs.count == rhs.count else { return false }; return zip(lhs, rhs).allSatisfy { first, second in first.id == second.id && first.processIdentifier == second.processIdentifier && first.bundleIdentifier == second.bundleIdentifier && first.editorName == second.editorName && first.projectName == second.projectName && first.detail == second.detail && first.branchName == second.branchName && first.localDirectory == second.localDirectory && first.screenLabel == second.screenLabel && first.isCurrent == second.isCurrent } }
 
     // 通过 NSString 兼容当前 macOS Foundation 的波浪号路径缩写 API。
     private func shortenedPath(_ url: URL) -> String { (url.path as NSString).abbreviatingWithTildeInPath }

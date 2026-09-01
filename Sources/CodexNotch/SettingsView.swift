@@ -161,7 +161,7 @@ struct SettingsView: View {
     private var hotKeySection: some View {
         settingsSection(icon: "keyboard", title: "快捷键", spacing: 14, verticalPadding: 16) {
             hotKeyRow(title: "面板快捷键", hotKey: settings.hotKey) { settings.resetToDefault() }
-            Text("按一次打开 Codex，400ms 内连按两次打开 Xcode")
+            Text("按一次打开 Codex，400ms 内连按两次打开 IDE 窗口助手")
                 .font(fontSettings.font(size: 11))
                 .foregroundStyle(SettingsPalette.secondaryText)
             if let validationMessage = settings.validationMessage {
