@@ -4,7 +4,7 @@ import Foundation
 // 通过公开 GitHub Releases 检查新版本；未签名应用只跳转下载页，不在进程内替换 App。
 @MainActor
 final class GitHubUpdateChecker: ObservableObject {
-    private static let latestReleaseAPIURL = URL(string: "https://api.github.com/repos/renzhihe110/codex-notch-macos-app/releases/latest")!
+    private static let latestReleasePageURL = URL(string: "https://github.com/renzhihe110/codex-notch-macos-app/releases/latest")!
 
     @Published private(set) var isChecking = false
     @Published private(set) var statusMessage = "通过 GitHub Releases 检查公开版本。"
@@ -33,22 +33,37 @@ final class GitHubUpdateChecker: ObservableObject {
                 }
             } catch UpdateCheckError.noRelease {
                 statusMessage = "GitHub 暂未发布可用版本。"
+            } catch UpdateCheckError.httpStatus(let statusCode) {
+                statusMessage = "GitHub 返回异常状态（HTTP \(statusCode)）。"
+            } catch UpdateCheckError.invalidResponse {
+                statusMessage = "GitHub 返回了无法识别的版本信息。"
+            // 真实网络错误按常见原因展示，避免再把服务端状态误报成断网。
+            } catch let error as URLError {
+                switch error.code {
+                case .notConnectedToInternet:
+                    statusMessage = "当前网络不可用。"
+                case .timedOut:
+                    statusMessage = "连接 GitHub 超时。"
+                default:
+                    statusMessage = "无法连接 GitHub（错误码 \(error.code.rawValue)）。"
+                }
             } catch {
-                statusMessage = "检查失败，请确认网络后重试。"
+                statusMessage = "检查失败，请稍后重试。"
             }
         }
     }
 
-    // GitHub latest release 接口只读取公开元数据，不携带账号凭证或本地 Codex 数据。
+    // 跟随公开 latest 页面重定向读取标签，绕开匿名 REST API 的共享 IPv4 限额。
     private func fetchLatestRelease() async throws -> GitHubRelease {
-        var request = URLRequest(url: Self.latestReleaseAPIURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: Self.latestReleasePageURL, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.httpMethod = "HEAD"
         request.setValue("CodexNotch/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else { throw UpdateCheckError.invalidResponse }
         if httpResponse.statusCode == 404 { throw UpdateCheckError.noRelease }
-        guard httpResponse.statusCode == 200 else { throw UpdateCheckError.invalidResponse }
-        return try JSONDecoder().decode(GitHubRelease.self, from: data)
+        guard httpResponse.statusCode == 200 else { throw UpdateCheckError.httpStatus(httpResponse.statusCode) }
+        guard let finalURL = httpResponse.url, finalURL.path.contains("/releases/tag/"), let tagName = finalURL.lastPathComponent.removingPercentEncoding, !tagName.isEmpty else { throw UpdateCheckError.invalidResponse }
+        return GitHubRelease(tagName: tagName, htmlURL: finalURL)
     }
 
     // 版本标签采用 v1.2.3 或 1.2.3；其他命名不参与大小比较，避免误报更新。
@@ -79,18 +94,14 @@ final class GitHubUpdateChecker: ObservableObject {
 }
 
 // 只解析版本标签和网页地址，避免把 Release 正文或资产列表带入应用状态。
-private struct GitHubRelease: Decodable {
+private struct GitHubRelease {
     let tagName: String
     let htmlURL: URL
-
-    enum CodingKeys: String, CodingKey {
-        case tagName = "tag_name"
-        case htmlURL = "html_url"
-    }
 }
 
 // 区分“尚无 Release”和其他异常，设置页可给出更准确的提示。
 private enum UpdateCheckError: Error {
     case invalidResponse
     case noRelease
+    case httpStatus(Int)
 }

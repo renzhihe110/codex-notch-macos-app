@@ -9,6 +9,8 @@ final class CompletionPopupController {
     private var dismissWorkItem: DispatchWorkItem?
     private var seenCompletionKeys = Set<String>()
     private var hasCapturedInitialSnapshot = false
+    // 首次状态恢复可能分多轮完成，不为启动前的历史完成事件补弹通知。
+    private let monitoringStartedAt = Date()
 
     init(settings: CompletionPopupSettings = .shared, onOpenSession: @escaping (CodexSession) -> Void) {
         self.settings = settings
@@ -24,7 +26,7 @@ final class CompletionPopupController {
             hasCapturedInitialSnapshot = true
             return
         }
-        let newSessions = completionSessions.filter { !seenCompletionKeys.contains(completionKey(for: $0)) }
+        let newSessions = completionSessions.filter { !seenCompletionKeys.contains(completionKey(for: $0)) && ($0.completionEventAt ?? .distantPast) >= monitoringStartedAt }
         seenCompletionKeys.formUnion(completionKeys)
         guard let session = newSessions.max(by: { completionSortDate(for: $0) < completionSortDate(for: $1) }) else { return }
         show(session: session)
@@ -83,7 +85,7 @@ final class CompletionPopupController {
     }
 
     private func isCompletionSession(_ session: CodexSession) -> Bool {
-        session.status == .green && session.lastEvent == "task_complete"
+        session.isCompleted
     }
 
     private func completionKey(for session: CodexSession) -> String {

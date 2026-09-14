@@ -23,13 +23,19 @@ struct CodexNotchApp: App {
 // 启动时创建刘海窗口，并每 1 秒从 Codex 本地状态刷新一次。
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let reader = CodexStoreReader()
-    // 所有 Codex 日志读取都在同一后台队列执行，避免首次大文件扫描阻塞宠物首帧或并发访问游标。
+    // 状态日志由独立队列读取，避免 Token 全量统计延迟任务状态更新。
     private let refreshQueue = DispatchQueue(label: "local.codex.notch.refresh", qos: .utility)
+    // Token reader 只在自己的串行队列访问，不与状态读取共享可变缓存。
+    private let tokenReader = CodexStoreReader()
+    private let tokenRefreshQueue = DispatchQueue(label: "local.codex.notch.tokens", qos: .utility)
     private let jumpRouter = JumpRouter()
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
     private let capsuleSettings = CapsuleSettings.shared
     private let completionPopupSettings = CompletionPopupSettings.shared
+    // 待查看状态读取 Codex 官方持久化集合，避免主窗口与悬浮助手各自维护已读记录。
+    private let completionReadStore = CompletionReadStore.shared
+    private let officialUnreadReader = CodexOfficialUnreadReader()
     private let petCatalog = CodexPetCatalog.shared
     private var notchWindowController: NotchWindowController?
     private var xcodeDashboardWindowController: XcodeDashboardWindowController?
@@ -40,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var settingsWindowController = SettingsWindowController(settings: hotKeySettings, capsuleSettings: capsuleSettings, completionPopupSettings: completionPopupSettings, petCatalog: petCatalog)
     private var refreshTimer: Timer?
     private var isRefreshInFlight = false
+    // 忙碌期间最多合并一次状态刷新；统计结果和窗口组合仅在主线程更新。
+    private var needsStatusRefresh = false
+    private var tokenRefreshTimer: Timer?
+    private var isTokenRefreshInFlight = false
+    private var latestSnapshot: CodexStoreSnapshot?
+    private var todayTokenUsage = TodayTokenUsage.empty(dayStart: Calendar.current.startOfDay(for: Date()))
     private var hasLoadedInitialSnapshot = false
     private var displayMode: EntryDisplayMode = .capsule
 
@@ -81,55 +93,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindowController?.setExternalEntryWindow(statusController.entryWindow)
         applyDisplayMode()
         refreshStatus()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.refreshStatus()
-        }
+        // 公共 RunLoop 模式保持交互期间的刷新，状态每秒、统计每五秒分别触发。
+        refreshTokenUsage()
+        let statusTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.refreshStatus() }
+        refreshTimer = statusTimer
+        RunLoop.main.add(statusTimer, forMode: .common)
+        let tokenTimer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refreshTokenUsage() }
+        tokenRefreshTimer = tokenTimer
+        RunLoop.main.add(tokenTimer, forMode: .common)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        tokenRefreshTimer?.invalidate()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
-    // 后台读取尚未结束时合并后续刷新，避免每秒定时器堆积相同的大文件扫描。
-    private func refreshStatus() {
-        guard !isRefreshInFlight else { return }
-        isRefreshInFlight = true
-        let shouldLoadTitlePreview = !hasLoadedInitialSnapshot
-        refreshQueue.async { [weak self] in
-            guard let self else { return }
-            if shouldLoadTitlePreview {
-                let titleSnapshot = self.reader.loadTitleSnapshot()
-                DispatchQueue.main.async { [weak self] in self?.applyTitlePreview(snapshot: titleSnapshot) }
-            }
-            let snapshot = self.reader.loadSnapshot()
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.isRefreshInFlight = false
-                self.hasLoadedInitialSnapshot = true
-                self.apply(snapshot: snapshot)
-            }
-        }
-    }
+    // 状态读取忙碌时只记一次待刷新，完成后立即补读；整个过程不等待 Token 统计。
+    private func refreshStatus() { guard !isRefreshInFlight else { needsStatusRefresh = true; return }; isRefreshInFlight = true; needsStatusRefresh = false; let shouldLoadTitlePreview = !hasLoadedInitialSnapshot; refreshQueue.async { [weak self] in guard let self else { return }; if shouldLoadTitlePreview { let titleSnapshot = self.reader.loadTitleSnapshot(); DispatchQueue.main.async { [weak self] in self?.applyTitlePreview(snapshot: titleSnapshot) } }; let snapshot = self.reader.loadSnapshot(); let unreadIDs = self.officialUnreadReader.loadUnreadSessionIDs(); DispatchQueue.main.async { [weak self] in guard let self else { return }; self.isRefreshInFlight = false; self.hasLoadedInitialSnapshot = true; self.apply(snapshot: snapshot, officialUnreadSessionIDs: unreadIDs); if self.needsStatusRefresh { self.refreshStatus() } } } }
+
+    // Token 使用独立队列和低频刷新，完成后只更新展示，不重复触发任务提醒。
+    private func refreshTokenUsage() { guard !isTokenRefreshInFlight else { return }; isTokenRefreshInFlight = true; tokenRefreshQueue.async { [weak self] in guard let self else { return }; let usage = self.tokenReader.loadTodayTokenUsage(); DispatchQueue.main.async { [weak self] in guard let self else { return }; self.isTokenRefreshInFlight = false; if usage.dayStart == Calendar.current.startOfDay(for: Date()) { self.todayTokenUsage = usage }; if let snapshot = self.latestSnapshot { _ = self.publish(snapshot: snapshot) } } } }
+
+    // 主线程组合最近的状态和统计快照，跨日先清空昨日 Token，避免短暂展示旧日期用量。
+    private func publish(snapshot: CodexStoreSnapshot) -> NotchState { let dayStart = Calendar.current.startOfDay(for: Date()); if todayTokenUsage.dayStart != dayStart { todayTokenUsage = .empty(dayStart: dayStart) }; let state = StatusMapper.map(snapshot: snapshot, todayTokenUsage: todayTokenUsage); notchWindowController?.update(state: state); statusBarItemController?.update(state: state); return state }
 
     // 标题预览只刷新可见内容，完整状态到达前不发送通知或完成事件。
     private func applyTitlePreview(snapshot: CodexStoreSnapshot) {
-        let state = StatusMapper.map(snapshot: snapshot)
-        notchWindowController?.update(state: state)
-        statusBarItemController?.update(state: state)
+        latestSnapshot = snapshot
+        _ = publish(snapshot: snapshot)
     }
 
     // 状态读取完成后统一回到主线程更新窗口和通知。
-    private func apply(snapshot: CodexStoreSnapshot) {
-        let state = StatusMapper.map(snapshot: snapshot)
-        notchWindowController?.update(state: state)
-        statusBarItemController?.update(state: state)
+    private func apply(snapshot: CodexStoreSnapshot, officialUnreadSessionIDs: Set<String>?) {
+        latestSnapshot = snapshot
+        let state = publish(snapshot: snapshot)
         alertNotifier.notifyIfNeeded(for: state.sessions)
-        // 首次读取失败且没有会话时不建立完成基线，避免恢复读取后误弹历史完成任务。
+        // 任务读取失败且没有会话时保留当前映射，避免短暂故障把全部蓝点误清空。
         if !snapshot.sessions.isEmpty || snapshot.errors.isEmpty {
+            completionReadStore.reconcile(sessions: state.sessions, officialUnreadSessionIDs: officialUnreadSessionIDs)
             completionPopupController.showIfNeededFor(sessions: state.sessions)
         }
     }

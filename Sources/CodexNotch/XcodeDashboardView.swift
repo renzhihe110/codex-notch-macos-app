@@ -10,15 +10,28 @@ enum XcodeDashboardMetrics {
     static let footerHeight: CGFloat = 38
     static let rowHeight: CGFloat = 62
     static let resizeHandleInset: CGFloat = 6
+    // 标题栏拖动监听必须避开内联编辑器 Tab，确保按钮能接收鼠标事件。
+    static let editorTabDragExclusionX = CGFloat(150)...CGFloat(430)
+}
+
+// 编辑器 Tab 只负责筛选现有窗口，不改变窗口发现与唤醒逻辑。
+enum IDEEditorTab {
+    case xcode
+    case vsCode
+
+    var title: String { switch self { case .xcode: return "Xcode"; case .vsCode: return "VS Code" } }
+    var bundleIdentifier: String { switch self { case .xcode: return "com.apple.dt.Xcode"; case .vsCode: return "com.microsoft.VSCode" } }
 }
 
 // 只记录当前 Xcode Dashboard 展示状态，不持久化也不影响 Codex 面板。
 final class XcodeDashboardPresentationState: ObservableObject {
     @Published var isPinned = false
     @Published var size = XcodeDashboardMetrics.size
+    // Tab 选择提升到窗口展示状态，使标题栏点击与窗口级快捷键共享同一状态。
+    @Published var selectedEditor: IDEEditorTab?
 }
 
-// 以紧凑统一列表展示 Xcode 窗口，当前窗口仅使用蓝色左侧指示条和文字强调。
+// 以紧凑 Tab 分开展示 Xcode 与 VS Code 窗口，当前窗口使用蓝色左侧指示条和文字强调。
 struct XcodeDashboardView: View {
     @ObservedObject var manager: XcodeWindowManager
     @ObservedObject var presentationState: XcodeDashboardPresentationState
@@ -28,6 +41,8 @@ struct XcodeDashboardView: View {
     let onClose: () -> Void
     let onOpenAccessibilitySettings: () -> Void
     @ObservedObject private var fontSettings = FontSettings.shared
+    // 分支名称复用设置页的项目目录颜色，用户选色后 Xcode 列表立即同步刷新。
+    @ObservedObject private var directoryColorSettings = DirectoryColorSettings.shared
     @State private var hoveredWindowID: String?
     // Xcode 与 VS Code 图标只在进程初始化时读取一次，滚动重绘不再反复解码图标文件。
     private static let xcodeApplicationIcon: NSImage = { let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.dt.Xcode") ?? URL(fileURLWithPath: "/Applications/Xcode.app"); return NSWorkspace.shared.icon(forFile: applicationURL.path) }()
@@ -51,12 +66,12 @@ struct XcodeDashboardView: View {
         .preferredColorScheme(.dark)
     }
 
-    // 标题栏使用通用编辑器图标和蓝灰数量标签，与 Codex 悬浮助手形成明确区分。
+    // 标题栏使用紧凑下划线 Tab 分离 Xcode 与 VS Code，保持列表可用高度不变。
     private var dashboardHeader: some View {
         HStack(spacing: 9) {
             Image(systemName: "chevron.left.forwardslash.chevron.right").font(fontSettings.font(size: 20, weight: .semibold)).foregroundStyle(Color(red: 0.44, green: 0.76, blue: 1.0)).frame(width: 24, height: 24)
             Text("IDE 窗口助手").font(fontSettings.font(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
-            Text("\(manager.windows.count) 个窗口").font(fontSettings.font(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.55)).padding(.horizontal, 8).frame(height: 26).background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.055))).overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+            HStack(spacing: 12) { editorTabButton(.xcode); Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 24); editorTabButton(.vsCode) }.padding(.leading, 8)
             Spacer(minLength: 0)
             headerButton(systemName: presentationState.isPinned ? "pin.fill" : "pin", help: presentationState.isPinned ? "取消常驻" : "常驻面板", isActive: presentationState.isPinned, action: onTogglePin)
             headerButton(systemName: "gearshape", help: "打开设置", action: onOpenSettings)
@@ -68,17 +83,17 @@ struct XcodeDashboardView: View {
     // 主区在有数据时展示统一列表，异常状态则给出单一、可执行的说明。
     @ViewBuilder private var dashboardContent: some View {
         if manager.availability == .ready {
-            windowList
+            if filteredWindows.isEmpty { editorEmptyView } else { windowList }
         } else {
             availabilityView
         }
     }
 
-    // Xcode 窗口卡沿用 Codex 任务卡的间距、圆角与深色分层，更多窗口在内部滚动。
+    // IDE 窗口卡沿用 Codex 任务卡的间距、圆角与深色分层，更多窗口在内部滚动。
     private var windowList: some View {
         ScrollView {
             LazyVStack(spacing: 6) {
-                ForEach(manager.windows) { item in
+                ForEach(filteredWindows) { item in
                     windowRow(item)
                 }
             }
@@ -87,6 +102,17 @@ struct XcodeDashboardView: View {
         .scrollIndicators(.visible)
         .padding(.horizontal, 20)
     }
+
+    // Tab 数字按编辑器窗口实时统计，完整矩形热区覆盖文字周围空白并保持 42pt 点击高度。
+    private func editorTabButton(_ editor: IDEEditorTab) -> some View { Button { presentationState.selectedEditor = editor } label: { HStack(spacing: 7) { Text(editor.title); Text("\(windowCount(for: editor))") }.font(fontSettings.font(size: 14, weight: .semibold)).foregroundStyle(activeEditor == editor ? .white.opacity(0.94) : .white.opacity(0.48)).padding(.horizontal, 4).frame(minWidth: 88, minHeight: 42).contentShape(Rectangle()).overlay(alignment: .bottom) { Rectangle().fill(Color(red: 0.18, green: 0.63, blue: 1.0)).frame(height: 3).clipShape(Capsule()).opacity(activeEditor == editor ? 1 : 0) } }.buttonStyle(.plain).accessibilityLabel("显示 \(editor.title) 窗口").accessibilityAddTraits(activeEditor == editor ? .isSelected : []) }
+
+    // 用户尚未选择时优先 Xcode，没有 Xcode 窗口才自动展示 VS Code。
+    private var activeEditor: IDEEditorTab { presentationState.selectedEditor ?? (windows(for: .xcode).isEmpty && !windows(for: .vsCode).isEmpty ? .vsCode : .xcode) }
+
+    // 过滤逻辑保持在视图层，避免影响窗口管理器的采集顺序和刷新缓存。
+    private var filteredWindows: [XcodeWindowItem] { windows(for: activeEditor) }
+    private func windows(for editor: IDEEditorTab) -> [XcodeWindowItem] { manager.windows.filter { $0.bundleIdentifier == editor.bundleIdentifier } }
+    private func windowCount(for editor: IDEEditorTab) -> Int { windows(for: editor).count }
 
     // 整行都是点击目标，悬停只轻微提亮，当前窗口额外显示左侧蓝条和状态文字。
     private func windowRow(_ item: XcodeWindowItem) -> some View {
@@ -97,7 +123,7 @@ struct XcodeDashboardView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.projectName).font(fontSettings.font(size: 19.5, weight: .medium)).foregroundStyle(.white.opacity(0.94)).lineLimit(1)
                     // 第二行优先展示分支与本地仓库目录，悬停提示保留原有当前文件信息。
-                    HStack(spacing: 5) { Image(systemName: "arrow.triangle.branch").font(fontSettings.font(size: 12, weight: .semibold)).foregroundStyle(Color(red: 0.204, green: 0.827, blue: 0.600)); Text([item.branchName ?? "非 Git 项目", item.localDirectory ?? item.detail].joined(separator: " · ")).font(fontSettings.font(size: 15)).foregroundStyle(.white.opacity(0.54)).lineLimit(1).truncationMode(.middle) }.help(item.detail)
+                    HStack(spacing: 5) { Image(systemName: "arrow.triangle.branch").font(fontSettings.font(size: 12, weight: .semibold)).foregroundStyle(Color(red: 0.204, green: 0.827, blue: 0.600)); (Text(item.branchName ?? "非 Git 项目").foregroundColor(directoryColorSettings.color) + Text(" · \(item.localDirectory ?? item.detail)").foregroundColor(.white.opacity(0.54))).font(fontSettings.font(size: 15)).lineLimit(1).truncationMode(.middle) }.help(item.detail)
                 }
                 Spacer(minLength: 14)
                 if item.isCurrent { Text("当前窗口").font(fontSettings.font(size: 15, weight: .semibold)).foregroundStyle(Color(red: 0.44, green: 0.76, blue: 1.0)) }
@@ -125,6 +151,9 @@ struct XcodeDashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 24)
     }
+
+    // 当前编辑器没有项目窗口时保留 Tab，并给出对应编辑器的明确提示。
+    private var editorEmptyView: some View { VStack(spacing: 10) { Image(systemName: "macwindow").font(fontSettings.font(size: 28, weight: .medium)).foregroundStyle(Color(red: 0.24, green: 0.61, blue: 1.0)); Text("暂无 \(activeEditor.title) 窗口").font(fontSettings.font(size: 17, weight: .semibold)).foregroundStyle(.white.opacity(0.92)); Text("请在 \(activeEditor.title) 中打开项目或工作区").font(fontSettings.font(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.52)) }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(.horizontal, 24) }
 
     // 底部只说明点击切换，唤醒失败时原位替换为短错误提示。
     private var dashboardFooter: some View {

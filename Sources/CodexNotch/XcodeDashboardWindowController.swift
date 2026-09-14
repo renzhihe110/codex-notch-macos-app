@@ -116,8 +116,8 @@ final class XcodeDashboardWindowController: NSWindowController, NSWindowDelegate
     // SwiftUI 内容会覆盖整个无边框窗口，因此显式把顶部非控件区域转发为原生窗口拖拽。
     private func installWindowDragging() { localMouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in guard let self, let window = self.window, event.window === window, self.isWindowDragArea(event.locationInWindow, window: window) else { return event }; window.performDrag(with: event); return nil } }
 
-    // 仅允许拖动标题栏左侧与中间空白区，并避开边缘缩放热区和右侧按钮。
-    private func isWindowDragArea(_ location: CGPoint, window: NSWindow) -> Bool { let inset = XcodeDashboardMetrics.resizeHandleInset; return location.y >= window.frame.height - XcodeDashboardMetrics.headerHeight && location.y < window.frame.height - inset && location.x > inset && location.x < window.frame.width - 112 }
+    // 仅允许拖动标题栏非控件区域，并避开边缘缩放热区、编辑器 Tab 与右侧按钮。
+    private func isWindowDragArea(_ location: CGPoint, window: NSWindow) -> Bool { let inset = XcodeDashboardMetrics.resizeHandleInset; let isOutsideEditorTabs = !XcodeDashboardMetrics.editorTabDragExclusionX.contains(location.x); return location.y >= window.frame.height - XcodeDashboardMetrics.headerHeight && location.y < window.frame.height - inset && location.x > inset && location.x < window.frame.width - 112 && isOutsideEditorTabs }
 
     // 行点击成功后收起 Dashboard，让目标 Xcode 窗口直接成为视觉焦点。
     private func activate(_ item: XcodeWindowItem) { if manager.activate(item), !presentationState.isPinned { hide() } }
@@ -134,12 +134,19 @@ final class XcodeDashboardWindowController: NSWindowController, NSWindowDelegate
     // 权限按钮打开系统辅助功能设置，系统切换应用时窗口会通过失焦自动收起。
     private func openAccessibilitySettings() { guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }; NSWorkspace.shared.open(url) }
 
-    // Xcode 面板聚焦时只在本地处理 Escape，统一快捷键继续由 Codex 注册器接收。
+    // Xcode 面板聚焦时在本地处理关闭和编辑器 Tab 切换，统一面板快捷键继续由 Codex 注册器接收。
     private func installKeyboardHandling() {
         localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            if event.keyCode == UInt16(kVK_Escape), self.window?.isKeyWindow == true { self.hide(); return nil }
+            guard let self, self.window?.isKeyWindow == true else { return event }
+            if self.isEditorTabShortcut(event) { self.toggleEditorTab(); return nil }
+            if event.keyCode == UInt16(kVK_Escape) { self.hide(); return nil }
             return event
         }
     }
+
+    // Command 与反引号物理键（键帽同时标有波浪号）组合时切换 Xcode 和 VS Code Tab，并兼容 Shift 输入波浪号。
+    private func isEditorTabShortcut(_ event: NSEvent) -> Bool { let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask); return event.keyCode == UInt16(kVK_ANSI_Grave) && modifiers.contains(.command) && !modifiers.contains(.control) && !modifiers.contains(.option) }
+
+    // 首次快捷键切换沿用视图的默认 Tab 规则，之后在两个编辑器之间交替。
+    private func toggleEditorTab() { let activeEditor = presentationState.selectedEditor ?? (manager.windows.contains { $0.bundleIdentifier == IDEEditorTab.xcode.bundleIdentifier } || !manager.windows.contains { $0.bundleIdentifier == IDEEditorTab.vsCode.bundleIdentifier } ? IDEEditorTab.xcode : IDEEditorTab.vsCode); presentationState.selectedEditor = activeEditor == .xcode ? .vsCode : .xcode }
 }

@@ -5,9 +5,14 @@ import SQLite3
 struct CodexStoreSnapshot: Equatable {
     let sessions: [CodexSession]
     let errors: [String]
-    let todayTokenUsage: TodayTokenUsage
     let loadedAt: Date
 }
+
+// 当前轮次仅由明确事件推进；条目完成和统计记录不覆盖任务生命周期。
+private struct SessionEventSummary { var lifecycle: SessionLifecycle = .unknown; var turnID: String?; var waitingCallID: String?; var lastEvent: String?; var errorHint: String?; var latestMessage: String?; var completionEventAt: Date?; var lastActivityAt: Date?; var hasLifecycleEvent = false }
+
+// 状态日志保存完整行游标，文件替换、截短或原位改写时重新恢复状态。
+private struct SessionRolloutCursor { let url: URL; let fileNumber: UInt64?; var consumedByteCount: UInt64 = 0; var pendingLineData = Data(); var discardingPartialLine = false; var summary = SessionEventSummary(); var lastKnownFileSize: UInt64 = 0; var modificationDate: Date? }
 
 // SQLite 候选库同时记录线程数据时间和文件时间，便于稳定选择当前活跃库。
 private struct SQLiteDatabaseCandidate {
@@ -65,16 +70,19 @@ private struct TokenRolloutCandidate {
 final class CodexStoreReader {
     private let codexHome: URL
     private let maxSessions: Int
-    private let sessionTailLineLimit: Int
+    // 状态与 Token 使用各自的 reader 实例；这里的游标只在状态读取队列访问。
+    private var sessionRolloutCursors: [String: SessionRolloutCursor] = [:]
     private var lastSuccessfulSnapshot: CodexStoreSnapshot?
     private var selectedDatabaseURL: URL?
     private var tokenRolloutCursors: [String: TokenRolloutCursor] = [:]
     private var lastCompleteTodayTokenUsage: TodayTokenUsage?
+    // 每个 reader 在自己的串行队列复用日期解析器，避免恢复日志时逐行创建格式化器。
+    private let eventDateFormatter = ISO8601DateFormatter()
+    private let fractionalEventDateFormatter: ISO8601DateFormatter = { let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return formatter }()
 
-    init(codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"), maxSessions: Int = 15, sessionTailLineLimit: Int = 80) {
+    init(codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"), maxSessions: Int = 15) {
         self.codexHome = codexHome
         self.maxSessions = maxSessions
-        self.sessionTailLineLimit = sessionTailLineLimit
     }
 
     // 首次展示只读取标题等 SQLite 元数据，不触碰会话日志和 Token 统计。
@@ -88,7 +96,7 @@ final class CodexStoreReader {
             sessions = loadSessionIndexFallback(errors: &fallbackErrors, includeDetails: false)
             errors = sessions.isEmpty ? sqliteErrors + fallbackErrors : fallbackErrors
         }
-        return CodexStoreSnapshot(sessions: sessions, errors: errors, todayTokenUsage: .empty(dayStart: Calendar.current.startOfDay(for: now)), loadedAt: now)
+        return CodexStoreSnapshot(sessions: sessions, errors: errors, loadedAt: now)
     }
 
     // 优先从 SQLite 读取未归档线程，失败或为空时退回 session_index.jsonl。
@@ -102,11 +110,13 @@ final class CodexStoreReader {
             sessions = loadSessionIndexFallback(errors: &fallbackErrors)
             errors = sessions.isEmpty ? sqliteErrors + fallbackErrors : fallbackErrors
         }
-        let todayTokenUsage = loadTodayTokenUsage(now: now)
         if sessions.isEmpty, let cachedSnapshot = lastSuccessfulSnapshot {
-            return CodexStoreSnapshot(sessions: cachedSnapshot.sessions, errors: errors, todayTokenUsage: todayTokenUsage, loadedAt: now)
+            return CodexStoreSnapshot(sessions: cachedSnapshot.sessions, errors: errors, loadedAt: now)
         }
-        let snapshot = CodexStoreSnapshot(sessions: sessions, errors: errors, todayTokenUsage: todayTokenUsage, loadedAt: now)
+        // 只保留可见任务游标，避免长期运行后积累已离开列表的日志缓存。
+        let visibleSessionIDs = Set(sessions.map(\.id))
+        sessionRolloutCursors = sessionRolloutCursors.filter { visibleSessionIDs.contains($0.key) }
+        let snapshot = CodexStoreSnapshot(sessions: sessions, errors: errors, loadedAt: now)
         if !sessions.isEmpty {
             lastSuccessfulSnapshot = snapshot
         }
@@ -261,8 +271,8 @@ final class CodexStoreReader {
                 let title = preferredTitle(title: sqliteText(statement, index: 2), cwd: cwd, fallback: id)
                 let createdAt = dateFromSQLiteMilliseconds(statement: statement, index: 4)
                 let updatedAt = dateFromSQLiteMilliseconds(statement: statement, index: 5)
-                let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 6), errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
-                sessions.append(CodexSession(id: id, name: cleanedName.isEmpty ? nil : cleanedName, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
+                let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: sqliteText(statement, index: 6), errors: &errors) : SessionEventSummary()
+                sessions.append(CodexSession(id: id, name: cleanedName.isEmpty ? nil : cleanedName, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
             }
             stepResult = sqlite3_step(statement)
         }
@@ -276,8 +286,10 @@ final class CodexStoreReader {
     }
 
     // 汇总当前本地自然日的真实 Token 增量，数据库级失败时回退同一天最后完整值。
-    private func loadTodayTokenUsage(now: Date) -> TodayTokenUsage {
+    func loadTodayTokenUsage(now: Date = Date()) -> TodayTokenUsage {
         let dayStart = Calendar.current.startOfDay(for: now)
+        // Token 队列独立发现数据库，不读取任务状态日志，也不共享状态 reader 的可变缓存。
+        selectedDatabaseURL = sqliteDatabaseURLs().first
         guard let databaseURL = selectedDatabaseURL, let candidates = todayTokenRolloutCandidates(databaseURL: databaseURL, dayStart: dayStart, now: now) else {
             return fallbackTodayTokenUsage(dayStart: dayStart, message: "Token 统计暂不可用")
         }
@@ -446,8 +458,8 @@ final class CodexStoreReader {
             let cwd = object["cwd"] as? String ?? ""
             let title = preferredTitle(title: object["thread_name"] as? String, cwd: cwd, fallback: id)
             let updatedAt = isoDate((object["updated_at"] as? String) ?? "") ?? Date(timeIntervalSince1970: 0)
-            let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors) : (lastEvent: nil, errorHint: nil, latestMessage: nil, completionEventAt: nil)
-            sessions.append(CodexSession(id: id, name: nil, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, status: .green, attention: nil))
+            let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors) : SessionEventSummary()
+            sessions.append(CodexSession(id: id, name: nil, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
         }
         if sessions.isEmpty {
             errors.append("session_index.jsonl 未读取到可用会话")
@@ -455,28 +467,32 @@ final class CodexStoreReader {
         return sessions
     }
 
-    // 从对应会话 jsonl 尾部抽取事件类型、失败关键词和最新自然语言短句。
-    private func sessionTailSummary(threadID: String, rolloutPath: String?, errors: inout [String]) -> (lastEvent: String?, errorHint: String?, latestMessage: String?, completionEventAt: Date?) {
-        guard let sessionURL = sessionFileURL(threadID: threadID, rolloutPath: rolloutPath) else { return (nil, nil, nil, nil) }
-        let lines = tailLines(from: sessionURL, maxLines: sessionTailLineLimit, errors: &errors)
-        let failureWords = ["error", "failed", "failure", "exception", "panic", "timeout", "denied", "cancelled"]
-        var lastEvent: String?
-        var matchedFailures: [String] = []
-        var latestMessage: String?
-        var completionEventAt: Date?
-        for line in lines {
-            guard let object = jsonObject(from: line) else { continue }
-            let metadata = failureKeywordSource(from: object).lowercased()
-            let currentEventType = eventType(from: object)
-            lastEvent = currentEventType ?? lastEvent
-            latestMessage = conversationMessage(from: object) ?? latestMessage
-            completionEventAt = completionDate(from: object, eventType: currentEventType) ?? completionEventAt
-            for word in failureWords where metadata.contains(word) && !matchedFailures.contains(word) {
-                matchedFailures.append(word)
-            }
-        }
-        return (lastEvent, matchedFailures.isEmpty ? nil : matchedFailures.joined(separator: ", "), latestMessage, completionEventAt)
-    }
+    // 文件未变时复用状态，增长时增量读取；临时失败保留可信状态，换文件则重新建立状态。
+    private func sessionTailSummary(threadID: String, rolloutPath: String?, errors: inout [String]) -> SessionEventSummary { let cached = sessionRolloutCursors[threadID]; guard let url = sessionFileURL(threadID: threadID, rolloutPath: rolloutPath), let attributes = try? FileManager.default.attributesOfItem(atPath: url.path), let size = (attributes[.size] as? NSNumber)?.uint64Value else { return cached?.summary ?? SessionEventSummary() }; let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value; let modifiedAt = attributes[.modificationDate] as? Date; let requiresReset = cached == nil || cached?.url != url || cached?.fileNumber != fileNumber || size < (cached?.consumedByteCount ?? 0) || (size == cached?.lastKnownFileSize && modifiedAt != cached?.modificationDate); do { var cursor: SessionRolloutCursor; if requiresReset { cursor = try initialSessionCursor(url: url, fileNumber: fileNumber, fileSize: size, errors: &errors) } else { cursor = cached!; try appendSessionEvents(fileSize: size, cursor: &cursor, errors: &errors) }; cursor.lastKnownFileSize = size; cursor.modificationDate = modifiedAt; sessionRolloutCursors[threadID] = cursor; var summary = cursor.summary; if cursor.consumedByteCount < size { summary.lifecycle = .unknown; summary.completionEventAt = nil }; return summary } catch { errors.append("会话状态读取失败，将在下一轮重试"); return requiresReset ? SessionEventSummary() : (cached?.summary ?? SessionEventSummary()) } }
+
+    // 首次从末尾逐次扩大窗口恢复生命周期，只解析完整行；达到 8 MiB 预算仍不确定时保持未知。
+    private func initialSessionCursor(url: URL, fileNumber: UInt64?, fileSize: UInt64, errors: inout [String]) throws -> SessionRolloutCursor { let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; var readSize = min(fileSize, UInt64(256 * 1024)); while true { var cursor = SessionRolloutCursor(url: url, fileNumber: fileNumber); let offset = fileSize - readSize; try handle.seek(toOffset: offset); let data = try handle.read(upToCount: Int(readSize)) ?? Data(); guard UInt64(data.count) == readSize else { throw CocoaError(.fileReadUnknown) }; cursor.consumedByteCount = fileSize; let parts = data.split(separator: 0x0A, omittingEmptySubsequences: false); cursor.discardingPartialLine = offset > 0 && parts.count == 1; cursor.pendingLineData = cursor.discardingPartialLine ? Data() : Data(parts.last ?? Data()); for line in parts.dropFirst(offset > 0 ? 1 : 0).dropLast() { consumeSessionLine(Data(line), summary: &cursor.summary, errors: &errors) }; if cursor.summary.hasLifecycleEvent || offset == 0 || readSize >= 8 * 1024 * 1024 { return cursor }; readSize = min(fileSize, min(readSize * 2, UInt64(8 * 1024 * 1024))) } }
+
+    // 每轮最多处理 8 MiB 新增字节，尾部半行留待后续拼接，避免大日志一次占满刷新队列。
+    private func appendSessionEvents(fileSize: UInt64, cursor: inout SessionRolloutCursor, errors: inout [String]) throws { guard fileSize > cursor.consumedByteCount else { return }; let handle = try FileHandle(forReadingFrom: cursor.url); defer { try? handle.close() }; try handle.seek(toOffset: cursor.consumedByteCount); let target = cursor.consumedByteCount + min(fileSize - cursor.consumedByteCount, UInt64(8 * 1024 * 1024)); while cursor.consumedByteCount < target { let count = Int(min(target - cursor.consumedByteCount, UInt64(64 * 1024))); guard let chunk = try handle.read(upToCount: count), !chunk.isEmpty else { throw CocoaError(.fileReadUnknown) }; cursor.consumedByteCount += UInt64(chunk.count); cursor.pendingLineData.append(chunk); consumeSessionLines(cursor: &cursor, errors: &errors) } }
+
+    // 仅消费换行结束的完整记录；初始化窗口从巨大行中间开始时，先丢弃该行剩余片段。
+    private func consumeSessionLines(cursor: inout SessionRolloutCursor, errors: inout [String]) { while let newline = cursor.pendingLineData.firstIndex(of: 0x0A) { let line = Data(cursor.pendingLineData[..<newline]); cursor.pendingLineData.removeSubrange(cursor.pendingLineData.startIndex...newline); if cursor.discardingPartialLine { cursor.discardingPartialLine = false; continue }; consumeSessionLine(line, summary: &cursor.summary, errors: &errors) }; if cursor.discardingPartialLine { cursor.pendingLineData.removeAll(keepingCapacity: false) } }
+
+    // 解析失败不会生成完成信号；仅提示日志读取不完整，不展示任何原始内容。
+    private func consumeSessionLine(_ line: Data, summary: inout SessionEventSummary, errors: inout [String]) { guard !line.isEmpty else { return }; guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { let message = "会话日志包含无法解析的完整记录"; if !errors.contains(message) { errors.append(message) }; return }; applySessionEvent(object, summary: &summary) }
+
+    // 每轮开始清除上一轮的完成时间、失败和输入等待，防止旧事件残留影响新任务。
+    private func beginSessionTurn(turnID: String?, eventAt: Date?, summary: inout SessionEventSummary) { summary.lifecycle = .running; summary.turnID = turnID; summary.waitingCallID = nil; summary.completionEventAt = nil; summary.errorHint = nil; summary.lastEvent = "task_started"; summary.lastActivityAt = eventAt }
+
+    // 生命周期只接受明确事件；统计、条目完成和未识别记录不会覆盖当前状态。
+    private func applySessionEvent(_ object: [String: Any], summary: inout SessionEventSummary) { let payload = object["payload"] as? [String: Any] ?? [:]; guard let type = (payload["type"] as? String) ?? (object["type"] as? String) else { return }; let turnID = payload["turn_id"] as? String; let eventAt = isoDate(object["timestamp"] as? String ?? ""); if type == "task_started" { beginSessionTurn(turnID: turnID, eventAt: eventAt, summary: &summary); summary.hasLifecycleEvent = true; return }; if let turnID, let currentTurnID = summary.turnID, turnID != currentTurnID { return }; summary.latestMessage = conversationMessage(from: object) ?? summary.latestMessage; if Self.sessionActivityEventTypes.contains(type), let eventAt { summary.lastActivityAt = max(summary.lastActivityAt ?? eventAt, eventAt) }; switch type { case "task_complete": guard let completedAt = completionDate(from: object, eventType: type) else { return }; summary.lifecycle = .completed; summary.turnID = turnID ?? summary.turnID; summary.waitingCallID = nil; summary.completionEventAt = completedAt; summary.lastActivityAt = eventAt ?? completedAt; summary.errorHint = nil; summary.lastEvent = type; summary.hasLifecycleEvent = true; if let message = payload["last_agent_message"] as? String, let cleaned = cleanedConversationText(message) { summary.latestMessage = "Codex：" + cleaned }; case "turn_aborted": summary.lifecycle = .stopped; summary.turnID = turnID ?? summary.turnID; summary.waitingCallID = nil; summary.completionEventAt = nil; summary.errorHint = nil; summary.lastEvent = type; summary.hasLifecycleEvent = true; case "user_message": beginSessionTurn(turnID: turnID ?? summary.turnID, eventAt: eventAt, summary: &summary); case "message" where payload["role"] as? String == "user": if summary.lifecycle != .running { beginSessionTurn(turnID: turnID, eventAt: eventAt, summary: &summary) }; case "function_call", "custom_tool_call": guard summary.lifecycle != .completed && summary.lifecycle != .stopped else { return }; if payload["name"] as? String == "request_user_input", let callID = payload["call_id"] as? String { summary.lifecycle = .waitingInput; summary.waitingCallID = callID; summary.lastEvent = "request_user_input" } else { recordSessionActivity(type, summary: &summary) }; case "function_call_output", "custom_tool_call_output": if let callID = payload["call_id"] as? String, callID == summary.waitingCallID { summary.waitingCallID = nil; summary.lifecycle = .running }; recordSessionActivity(type, summary: &summary); case "reasoning", "agent_message", "message": recordSessionActivity(type, summary: &summary); case "error": guard summary.lifecycle != .completed && summary.lifecycle != .stopped else { return }; summary.lifecycle = .failed; summary.completionEventAt = nil; summary.errorHint = "error"; summary.lastEvent = type; default: break } }
+
+    // 普通活动可恢复未知或失败状态，但不能把等待、已停止、已完成任务重新标记为运行。
+    private func recordSessionActivity(_ type: String, summary: inout SessionEventSummary) { guard summary.lifecycle != .completed && summary.lifecycle != .stopped && summary.waitingCallID == nil else { return }; summary.lifecycle = .running; summary.completionEventAt = nil; summary.errorHint = nil; summary.lastEvent = type }
+
+    // 事件活动时间只跟随真实任务输出与统计，后台设置更新不会延长停滞阈值。
+    private static let sessionActivityEventTypes: Set<String> = ["task_started", "task_complete", "turn_aborted", "user_message", "message", "reasoning", "agent_message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "item_completed", "token_count", "token_usage_record", "error"]
 
     // SQLite 有 rollout_path 时直接定位文件；fallback 缺路径时才递归查找。
     private func sessionFileURL(threadID: String, rolloutPath: String?) -> URL? {
@@ -615,17 +631,6 @@ final class CodexStoreReader {
         return object
     }
 
-    // 这些事件只更新上下文或统计，不改变 task_started 到明确终止事件之间的运行状态。
-    private static let neutralStatusEventTypes: Set<String> = ["token_count", "session_meta", "world_state", "turn_context", "context_compacted", "compacted", "thread_settings_applied", "patch_apply_end", "mcp_tool_call_end", "web_search_end", "sub_agent_activity", "inter_agent_communication_metadata"]
-
-    private func eventType(from object: [String: Any]) -> String? {
-        // Codex rollout 外层 type 多是 event_msg/response_item，真正状态优先读取 payload.type。
-        let payload = object["payload"] as? [String: Any]
-        guard let resolvedType = (payload?["type"] as? String) ?? (object["type"] as? String), !Self.neutralStatusEventTypes.contains(resolvedType) else { return nil }
-        if let status = payload?["status"] as? String, !status.isEmpty { return "\(resolvedType):\(status)" }
-        return resolvedType
-    }
-
     // task_complete 的完成时间来自事件本身，不使用 thread updated_at，避免后台元数据刷新触发误弹。
     private func completionDate(from object: [String: Any], eventType: String?) -> Date? {
         guard eventType == "task_complete" else { return nil }
@@ -689,27 +694,6 @@ final class CodexStoreReader {
         return String(collapsed.prefix(120))
     }
 
-    private func failureKeywordSource(from object: [String: Any]) -> String {
-        let payload = object["payload"] as? [String: Any]
-        let values = [
-            object["type"] as? String,
-            payload?["type"] as? String,
-            payload?["name"] as? String,
-            payload?["status"] as? String,
-            payload?["level"] as? String,
-            payload?["code"] as? String,
-            payload?["reason"] as? String,
-            payload?["kind"] as? String
-        ]
-        return values.compactMap { $0 }.joined(separator: " ")
-    }
-
-    private func isoDate(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: value) {
-            return date
-        }
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
-    }
+    // 同时兼容带毫秒和不带毫秒的事件时间，格式化器不跨队列共享。
+    private func isoDate(_ value: String) -> Date? { fractionalEventDateFormatter.date(from: value) ?? eventDateFormatter.date(from: value) }
 }

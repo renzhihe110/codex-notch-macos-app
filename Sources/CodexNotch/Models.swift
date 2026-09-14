@@ -7,6 +7,9 @@ enum SessionStatus: String, Equatable {
     case green
 }
 
+// 任务生命周期与颜色分开保存，未知和停止状态都不能作为完成依据。
+enum SessionLifecycle: String, Equatable { case unknown, running, waitingInput, completed, stopped, failed }
+
 // 表示会话里更需要用户注意的原因，供 UI 文案和本地通知复用。
 enum SessionAttention: String, Equatable {
     case waitingInput
@@ -47,8 +50,17 @@ struct CodexSession: Identifiable, Equatable {
     let latestMessage: String?
     // 最近 task_complete 事件自己的完成时间，避免把 thread 元数据更新时间误当作新完成。
     let completionEventAt: Date?
+    // 保存当前轮次的可信状态及事件活动时间，避免日志空窗或元数据更新改写完成判定。
+    let lifecycle: SessionLifecycle
+    let lastActivityAt: Date?
     let status: SessionStatus
     let attention: SessionAttention?
+
+    // 所有完成计数、未读状态和弹窗统一要求明确的完成事件及时间。
+    var isCompleted: Bool { lifecycle == .completed && completionEventAt != nil }
+
+    // 未知和已停止使用独立文案，避免黄色统一显示运行中、绿色统一显示完成。
+    var statusLabel: String { if let attention { return attention.shortLabel }; switch lifecycle { case .unknown: return "状态未知"; case .running: return "运行中"; case .waitingInput: return "等待输入"; case .completed: return isCompleted ? "已完成" : "状态未知"; case .stopped: return "已停止"; case .failed: return "失败" } }
 
     // 主标题优先对齐 Codex 的 name，缺失时回退原始 title 和工作目录。
     var displayTitle: String {

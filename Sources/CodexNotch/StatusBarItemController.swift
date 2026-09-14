@@ -183,7 +183,7 @@ final class StatusBarItemController: NSObject {
     private var basePose: CodexPetPose {
         if (state.errorMessage != nil && state.sessions.isEmpty) || state.sessions.contains(where: { $0.status == .red && $0.attention == nil }) { return .failed }
         if state.sessions.contains(where: { $0.attention == .waitingInput || $0.attention == .stalled }) { return .waiting }
-        if state.aggregateStatus == .yellow { return .running }
+        if state.sessions.contains(where: { $0.lifecycle == .running }) { return .running }
         return .idle
     }
 
@@ -424,7 +424,7 @@ final class StatusBarItemController: NSObject {
     }
 
     private var carouselSessions: [CodexSession] {
-        let activeSessions = state.sessions.filter { $0.status != .green }
+        let activeSessions = state.sessions.filter { $0.lifecycle == .running || $0.lifecycle == .waitingInput || $0.lifecycle == .failed }
         return activeSessions.isEmpty ? Array(state.sessions.prefix(1)) : activeSessions
     }
 
@@ -436,7 +436,7 @@ final class StatusBarItemController: NSObject {
     private var progressText: String {
         let total = state.sessions.count
         guard total > 0 else { return "0/0" }
-        let completed = state.sessions.filter { $0.status == .green }.count
+        let completed = state.sessions.filter(\.isCompleted).count
         return "\(completed)/\(total)"
     }
 
@@ -454,17 +454,8 @@ final class StatusBarItemController: NSObject {
         carouselIndex = carouselIndex % total
     }
 
-    private func statusText(for session: CodexSession) -> String {
-        if let attention = session.attention { return attention.shortLabel }
-        switch session.status {
-        case .red:
-            return "失败"
-        case .yellow:
-            return "运行中"
-        case .green:
-            return "完成"
-        }
-    }
+    // 宠物提示与列表共享生命周期文案，未知或已停止不会显示为完成。
+    private func statusText(for session: CodexSession) -> String { session.statusLabel }
 }
 
 // 宠物入口绘制透明 v2 帧，并负责发送点击、拖动、右键和悬停事件。

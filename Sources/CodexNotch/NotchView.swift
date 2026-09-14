@@ -38,6 +38,10 @@ struct NotchView: View {
     @ObservedObject private var directoryColorSettings = DirectoryColorSettings.shared
     // 监听悬浮面板尺寸偏好，窗口缩放时让 SwiftUI 内容立即跟随新尺寸。
     @ObservedObject private var floatingDashboardSettings = FloatingDashboardSettings.shared
+    // 监听运行态粒子偏好，设置页切换后立即刷新可见任务卡。
+    @ObservedObject private var particleEffectSettings = ParticleEffectSettings.shared
+    // 监听 Codex 官方待查看状态，主窗口查看任务后自动恢复绿色已完成胶囊。
+    @ObservedObject private var completionReadStore = CompletionReadStore.shared
     @State private var collapsedCarouselIndex = 0
     // 展开态布局常量放在 NotchWindowMetrics，确保视图和窗口按同一尺寸模型收缩。
     // 收起态轮播红黄灯会话，避免多个任务时只看到最新一条。
@@ -259,17 +263,17 @@ struct NotchView: View {
                 Spacer(minLength: 4)
                 Text(floatingStatusText(for: session))
                     .font(fontSettings.font(size: 15))
-                    .foregroundStyle(floatingTaskColor(session))
+                    .foregroundStyle(floatingStatusForeground(session))
                     .padding(.horizontal, 8)
                     .frame(height: 28)
-                    .background(Capsule().fill(floatingTaskStatusBackground(session)))
+                    .background(Capsule().fill(floatingStatusBackground(session)))
             }
             .padding(.horizontal, 10)
             .frame(height: 62)
             .background(ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color(red: 0.090, green: 0.102, blue: 0.118))
-                // 运行态在内容下方绘制彗星矩阵，保持任务文字和按钮命中不受影响。
-                if isFloatingTaskRunning(session) { RunningTaskCometBackground() }
+                // 运行态在内容下方绘制用户选择的粒子效果，保持文字和按钮命中不受影响。
+                if isFloatingTaskRunning(session) { RunningTaskParticleBackground(effect: particleEffectSettings.effect) }
             }.clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous)))
             .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(isFloatingTaskRunning(session) ? Color(red: 0.941, green: 0.725, blue: 0.325).opacity(0.82) : Color(red: 0.165, green: 0.188, blue: 0.216), lineWidth: 1))
         }
@@ -278,7 +282,7 @@ struct NotchView: View {
 
     // 只有当前文案语义为运行中的黄灯任务播放粒子，等待处理和停滞状态保持静止。
     private func isFloatingTaskRunning(_ session: CodexSession) -> Bool {
-        session.status == .yellow && session.attention == nil
+        session.lifecycle == .running && session.attention == nil
     }
 
     // 图标与状态标签都仅反映真实会话状态，任务标题不再影响颜色。
@@ -309,6 +313,15 @@ struct NotchView: View {
         }
     }
 
+    // 待查看使用设计稿中的蓝底白字，其余状态继续沿用现有红黄绿配色。
+    private func floatingStatusForeground(_ session: CodexSession) -> Color {
+        completionReadStore.isUnread(session) ? .white.opacity(0.96) : floatingTaskColor(session)
+    }
+
+    private func floatingStatusBackground(_ session: CodexSession) -> Color {
+        completionReadStore.isUnread(session) ? Color(red: 0.035, green: 0.424, blue: 0.839) : floatingTaskStatusBackground(session)
+    }
+
     private func floatingTaskSymbol(_ session: CodexSession) -> String {
         let title = session.displayTitle.lowercased()
         if title.contains("文档") || title.contains("说明") || title.contains("readme") || title.hasPrefix("pr ") || title.contains("pull request") { return "doc.text" }
@@ -332,7 +345,8 @@ struct NotchView: View {
     }
 
     private func floatingStatusText(for session: CodexSession) -> String {
-        session.status == .green && session.attention == nil ? "已完成" : collapsedStatusText(for: session)
+        if completionReadStore.isUnread(session) { return "待查看" }
+        return session.statusLabel
     }
 
     private var tokenSummaryText: String {
@@ -397,9 +411,9 @@ struct NotchView: View {
         .contentShape(Rectangle())
     }
 
-    // 收起态优先轮播红黄灯会话，没有红黄灯时只展示最近一条会话。
+    // 收起态只轮播运行、等待或失败任务，未知和已停止任务不再持续冒充运行。
     private var collapsedCarouselSessions: [CodexSession] {
-        let activeSessions = model.state.sessions.filter { $0.status != .green }
+        let activeSessions = model.state.sessions.filter { $0.lifecycle == .running || $0.lifecycle == .waitingInput || $0.lifecycle == .failed }
         return activeSessions.isEmpty ? Array(model.state.sessions.prefix(1)) : activeSessions
     }
 
@@ -416,7 +430,7 @@ struct NotchView: View {
     private var collapsedProgressText: String {
         let total = model.state.sessions.count
         guard total > 0 else { return "0/0" }
-        let completed = model.state.sessions.filter { $0.status == .green }.count
+        let completed = model.state.sessions.filter(\.isCompleted).count
         return "\(completed)/\(total)"
     }
 
@@ -543,116 +557,13 @@ struct NotchView: View {
         return title.isEmpty ? session.id : title
     }
 
-    private func collapsedStatusText(for session: CodexSession?) -> String {
-        guard let session else { return model.state.errorMessage == nil ? "空闲" : "失败" }
-        if let attention = session.attention {
-            return attention.shortLabel
-        }
-        let signal = [session.lastEvent, session.errorHint].compactMap { $0 }.joined(separator: " ").lowercased()
-        switch session.status {
-        case .red:
-            return "失败"
-        case .yellow:
-            if signal.contains("permission") || signal.contains("approval") || signal.contains("needs_input") || signal.contains("waiting") || signal.contains("wait") {
-                return "等待"
-            }
-            if signal.contains("blocked") || signal.contains("timeout") {
-                return "阻塞"
-            }
-            return "运行中"
-        case .green:
-            return "完成"
-        }
-    }
+    // 收起态与列表使用同一生命周期文案，不再根据颜色或关键词猜测任务状态。
+    private func collapsedStatusText(for session: CodexSession?) -> String { session?.statusLabel ?? (model.state.errorMessage == nil ? "空闲" : "失败") }
 
     // 展开态只展示短错误，避免系统错误占满刘海空间。
     private func shortError(_ message: String) -> String {
         String(message.prefix(96))
     }
-}
-
-// 彗星矩阵使用时间轴和 Canvas 直接绘制，避免为每颗粒子创建独立 SwiftUI 视图。
-private struct RunningTaskCometBackground: View {
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-
-    private static let particles: [CometParticle] = [
-        CometParticle(verticalPosition: 0.16, delay: 0.00, duration: 2.50, trailLength: 24, thickness: 1.4, isEmerald: false),
-        CometParticle(verticalPosition: 0.31, delay: 0.23, duration: 2.50, trailLength: 18, thickness: 1.2, isEmerald: false),
-        CometParticle(verticalPosition: 0.47, delay: 0.46, duration: 2.50, trailLength: 28, thickness: 1.5, isEmerald: true),
-        CometParticle(verticalPosition: 0.68, delay: 0.69, duration: 2.50, trailLength: 20, thickness: 1.3, isEmerald: false),
-        CometParticle(verticalPosition: 0.82, delay: 0.92, duration: 2.50, trailLength: 26, thickness: 1.4, isEmerald: false),
-        CometParticle(verticalPosition: 0.24, delay: 1.15, duration: 2.50, trailLength: 16, thickness: 1.1, isEmerald: true),
-        CometParticle(verticalPosition: 0.57, delay: 1.38, duration: 2.50, trailLength: 22, thickness: 1.3, isEmerald: false),
-        CometParticle(verticalPosition: 0.75, delay: 1.61, duration: 2.50, trailLength: 30, thickness: 1.5, isEmerald: false),
-        CometParticle(verticalPosition: 0.39, delay: 1.84, duration: 2.50, trailLength: 19, thickness: 1.2, isEmerald: true),
-        CometParticle(verticalPosition: 0.90, delay: 2.07, duration: 2.50, trailLength: 24, thickness: 1.3, isEmerald: false),
-        CometParticle(verticalPosition: 0.10, delay: 2.30, duration: 2.50, trailLength: 21, thickness: 1.2, isEmerald: false)
-    ]
-
-    @ViewBuilder var body: some View {
-        if accessibilityReduceMotion {
-            cometLayer(elapsed: 0.92)
-        } else {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                cometLayer(elapsed: timeline.date.timeIntervalSinceReferenceDate)
-            }
-        }
-    }
-
-    // 单个 Canvas 同时绘制扫描光带、彗星拖尾和粒子头，减少运行态刷新开销。
-    private func cometLayer(elapsed: TimeInterval) -> some View {
-        Canvas { context, size in
-            let amber = Color(red: 0.941, green: 0.725, blue: 0.325)
-            let emerald = Color(red: 0.204, green: 0.827, blue: 0.600)
-            let scanProgress = CGFloat(elapsed.truncatingRemainder(dividingBy: 2.5) / 2.5)
-            let scanWidth = max(48, size.width * 0.28)
-            let scanX = -scanWidth + (size.width + scanWidth * 2) * scanProgress
-            var scanPath = Path()
-            scanPath.move(to: CGPoint(x: scanX + scanWidth * 0.18, y: 0))
-            scanPath.addLine(to: CGPoint(x: scanX + scanWidth, y: 0))
-            scanPath.addLine(to: CGPoint(x: scanX + scanWidth * 0.82, y: size.height))
-            scanPath.addLine(to: CGPoint(x: scanX, y: size.height))
-            scanPath.closeSubpath()
-            context.fill(scanPath, with: .linearGradient(Gradient(stops: [.init(color: .clear, location: 0), .init(color: amber.opacity(0.04), location: 0.24), .init(color: amber.opacity(0.16), location: 0.64), .init(color: .clear, location: 1)]), startPoint: CGPoint(x: scanX, y: size.height / 2), endPoint: CGPoint(x: scanX + scanWidth, y: size.height / 2)))
-
-            for particle in Self.particles {
-                let progress = CGFloat((elapsed + particle.delay).truncatingRemainder(dividingBy: particle.duration) / particle.duration)
-                let headX = -particle.trailLength + (size.width + particle.trailLength * 2) * progress
-                let drift = CGFloat(sin((elapsed + particle.delay) * 1.6)) * 1.6 + (0.5 - progress) * 8
-                let headY = particle.verticalPosition * size.height + drift
-                let fadeIn = min(1, progress / 0.12)
-                let fadeOut = min(1, (1 - progress) / 0.18)
-                let opacity = max(0, min(fadeIn, fadeOut))
-                let color = particle.isEmerald ? emerald : amber
-                let trailStart = CGPoint(x: headX - particle.trailLength, y: headY)
-                let trailEnd = CGPoint(x: headX, y: headY)
-                var trailPath = Path()
-                trailPath.move(to: trailStart)
-                trailPath.addLine(to: trailEnd)
-
-                var glowContext = context
-                glowContext.opacity = Double(opacity * 0.14)
-                glowContext.stroke(trailPath, with: .color(color), style: StrokeStyle(lineWidth: particle.thickness + 2, lineCap: .round))
-
-                var trailContext = context
-                trailContext.opacity = Double(opacity)
-                trailContext.stroke(trailPath, with: .linearGradient(Gradient(stops: [.init(color: .clear, location: 0), .init(color: color.opacity(0.34), location: 0.52), .init(color: color, location: 1)]), startPoint: trailStart, endPoint: trailEnd), style: StrokeStyle(lineWidth: particle.thickness, lineCap: .round))
-                trailContext.fill(Path(ellipseIn: CGRect(x: headX - 1.3, y: headY - 1.3, width: 2.6, height: 2.6)), with: .color(color))
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
-// 粒子参数使用固定种子，保证任务列表刷新后仍保持稳定的视觉密度。
-private struct CometParticle {
-    let verticalPosition: CGFloat
-    let delay: TimeInterval
-    let duration: TimeInterval
-    let trailLength: CGFloat
-    let thickness: CGFloat
-    let isEmerald: Bool
 }
 
 // 单行会话信息，保持紧凑的桌面工具风格。

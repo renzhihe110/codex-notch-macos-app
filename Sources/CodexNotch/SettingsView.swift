@@ -28,6 +28,8 @@ struct SettingsView: View {
     @ObservedObject private var fontSettings = FontSettings.shared
     // 监听项目目录颜色偏好，并通过明确的按钮入口打开系统取色器。
     @ObservedObject private var directoryColorSettings = DirectoryColorSettings.shared
+    // 监听运行态粒子偏好，让设置菜单与 Dashboard 的即时预览保持同步。
+    @ObservedObject private var particleEffectSettings = ParticleEffectSettings.shared
     // 更新检查器仅在设置页存活，未签名版本仍只跳转 GitHub 下载页。
     @StateObject private var updateChecker = GitHubUpdateChecker()
     // 颜色面板控制器负责可靠显示 AppKit 调色板并连续回传用户选色。
@@ -39,6 +41,7 @@ struct SettingsView: View {
     @State private var originalDirectoryColor: Color?
     @State private var originalHotKey: HotKey?
     @State private var originalCapsuleSize: CapsuleSize?
+    @State private var originalParticleEffect: RunningParticleEffect?
     @State private var originalPetOptionID: String?
     @State private var originalDismissDelaySeconds: Int?
 
@@ -113,6 +116,8 @@ struct SettingsView: View {
             hotKeySection
             sectionDivider
             capsuleSection
+            sectionDivider
+            particleEffectSection
             sectionDivider
             petSection
             sectionDivider
@@ -204,6 +209,31 @@ struct SettingsView: View {
                 .frame(width: 166, height: 32)
                 .background(controlSurface)
             }
+        }
+    }
+
+    // 粒子效果分区用下拉菜单承载四个候选，选择后当前 Dashboard 立即刷新。
+    private var particleEffectSection: some View {
+        settingsSection(icon: "sparkles", title: "粒子效果", spacing: 13, verticalPadding: 12.5) {
+            HStack(spacing: 14) {
+                Text("运行状态")
+                Spacer(minLength: 12)
+                Menu {
+                    ForEach(RunningParticleEffect.allCases) { effect in
+                        Button(effect.displayName) { particleEffectSettings.select(effect: effect) }
+                    }
+                } label: {
+                    menuTitle(particleEffectSettings.effect.displayName, hasLeadingIcon: false)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 148, height: 30)
+                .background(controlSurface)
+                .overlay(alignment: .trailing) { menuChevron }
+            }
+            Text("仅运行中的任务显示粒子，等待和完成状态保持静止")
+                .font(fontSettings.font(size: 11))
+                .foregroundStyle(SettingsPalette.secondaryText)
         }
     }
 
@@ -304,7 +334,7 @@ struct SettingsView: View {
         .padding(.top, 14)
     }
 
-    // 分区构造器统一标题、图标和内容间距，使六个模块保持相同视觉节奏。
+    // 分区构造器统一标题、图标和内容间距，使各模块保持相同视觉节奏。
     private func settingsSection<Content: View>(icon: String, title: String, spacing: CGFloat = 13, verticalPadding: CGFloat = 15, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: spacing) {
             HStack(spacing: 9) {
@@ -398,6 +428,7 @@ struct SettingsView: View {
         originalDirectoryColor = directoryColorSettings.color
         originalHotKey = settings.hotKey
         originalCapsuleSize = capsuleSettings.size
+        originalParticleEffect = particleEffectSettings.effect
         originalPetOptionID = petCatalog.selectedOptionID
         originalDismissDelaySeconds = completionPopupSettings.dismissDelaySeconds
     }
@@ -409,13 +440,14 @@ struct SettingsView: View {
         closeWindow()
     }
 
-    // 取消依次恢复窗口打开时的六项设置，再关闭窗口。
+    // 取消依次恢复窗口打开时的各项设置，再关闭窗口。
     private func cancelChanges() {
         stopRecording()
         if let originalFontName { fontSettings.select(fontName: originalFontName) }
         if let originalDirectoryColor { directoryColorSettings.update(color: originalDirectoryColor) }
         if let originalHotKey { settings.restore(hotKey: originalHotKey) }
         if let originalCapsuleSize { capsuleSettings.select(size: originalCapsuleSize) }
+        if let originalParticleEffect { particleEffectSettings.select(effect: originalParticleEffect) }
         if let originalPetOptionID { petCatalog.select(optionID: originalPetOptionID) }
         if let originalDismissDelaySeconds { completionPopupSettings.updateDismissDelaySeconds(originalDismissDelaySeconds) }
         closeWindow()
@@ -428,6 +460,7 @@ struct SettingsView: View {
         directoryColorSettings.update(color: Color.white.opacity(0.54))
         settings.resetToDefault()
         capsuleSettings.select(size: .regular)
+        particleEffectSettings.resetToDefault()
         petCatalog.select(optionID: CodexPetTheme.suitSwimming.selectionID)
         completionPopupSettings.updateDismissDelaySeconds(3)
     }
