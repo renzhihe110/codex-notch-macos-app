@@ -3,6 +3,8 @@ import Foundation
 
 // 只读解析 Codex 官方持久化的未读任务集合，并在文件未变化时复用最近快照。
 final class CodexOfficialUnreadReader {
+    // 新版 Codex 将未读列表移至根节点，并按身份和主机分组。
+    private static let threadReadStateKey = "electron-thread-read-state-v1"
     private static let persistedAtomStateKey = "electron-persisted-atom-state"
     private static let unreadThreadIDsKey = "unread-thread-ids-by-host-v1"
     private let globalStateURL: URL
@@ -19,11 +21,29 @@ final class CodexOfficialUnreadReader {
         if fileSignature == cachedFileSignature { return cachedUnreadSessionIDs }
         do {
             let data = try Data(contentsOf: globalStateURL, options: .mappedIfSafe)
-            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any], let persistedAtomState = root[Self.persistedAtomStateKey] as? [String: Any], let unreadThreadIDsByHost = persistedAtomState[Self.unreadThreadIDsKey] as? [String: Any] else { return cachedUnreadSessionIDs }
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return cachedUnreadSessionIDs
+            }
+            // 新格式存在时只读取当前未读集合，不合并可能已经过期的旧版或迁移记录。
+            let unreadThreadIDsByHostGroups: [[String: [String]]]
+            if let readStateValue = root[Self.threadReadStateKey] {
+                guard let readState = readStateValue as? [String: Any], let version = readState["version"] as? Int, version == 1, let unreadByIdentity = readState["unreadByIdentity"] as? [String: [String: [String]]] else {
+                    return cachedUnreadSessionIDs
+                }
+                unreadThreadIDsByHostGroups = Array(unreadByIdentity.values)
+            } else {
+                // 旧版客户端继续读取原有字段；结构异常时保留最近成功快照。
+                guard let persistedAtomState = root[Self.persistedAtomStateKey] as? [String: Any], let unreadThreadIDsByHost = persistedAtomState[Self.unreadThreadIDsKey] as? [String: [String]] else {
+                    return cachedUnreadSessionIDs
+                }
+                unreadThreadIDsByHostGroups = [unreadThreadIDsByHost]
+            }
+            // 沿用按任务 ID 汇总的行为，后续仅展示当前已完成任务的未读状态。
             var unreadSessionIDs = Set<String>()
-            for value in unreadThreadIDsByHost.values {
-                guard let hostUnreadSessionIDs = value as? [String] else { return cachedUnreadSessionIDs }
-                unreadSessionIDs.formUnion(hostUnreadSessionIDs)
+            for unreadThreadIDsByHost in unreadThreadIDsByHostGroups {
+                for hostUnreadSessionIDs in unreadThreadIDsByHost.values {
+                    unreadSessionIDs.formUnion(hostUnreadSessionIDs)
+                }
             }
             cachedFileSignature = fileSignature
             cachedUnreadSessionIDs = unreadSessionIDs
