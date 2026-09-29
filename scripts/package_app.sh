@@ -17,7 +17,7 @@ case "$CONFIGURATION" in
 esac
 
 # 定义 bundle 名称和目录结构，保持产物集中在 dist 下。
-APP_NAME="Codex Notch"
+APP_NAME="Codex 悬浮助手"
 EXECUTABLE_NAME="CodexNotch"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-local.codex.notch}"
 APP_VERSION="${APP_VERSION:-0.1.2}"
@@ -62,6 +62,8 @@ cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Add :CFBundleInfoDictionaryVersion string 6.0" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
+# Finder 和系统界面统一使用中文显示名，内部可执行文件与 Bundle ID 保持兼容。
+/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$CONTENTS_DIR/Info.plist"
 # 发布到 GitHub Releases 时从环境变量写入版本，确保应用内比较使用真实版本号。
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$CONTENTS_DIR/Info.plist"
@@ -77,6 +79,14 @@ chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
 # 先暂存新 bundle，再替换应用程序目录中的旧版本；替换失败会自动恢复旧副本。
 rm -rf "$STAGED_APP_BUNDLE" "$PREVIOUS_APP_BUNDLE"
 /usr/bin/ditto "$APP_BUNDLE" "$STAGED_APP_BUNDLE"
+# 首次中文更名时迁移同一 Bundle ID 的旧安装，避免应用程序目录留下两个入口。
+LEGACY_APP_BUNDLE="/Applications/Codex Notch.app"
+if [[ ! -e "$INSTALLED_APP_BUNDLE" && -d "$LEGACY_APP_BUNDLE" ]]; then
+    LEGACY_BUNDLE_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
+    if [[ "$LEGACY_BUNDLE_IDENTIFIER" == "$BUNDLE_IDENTIFIER" ]]; then
+        mv "$LEGACY_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"
+    fi
+fi
 if [[ -e "$INSTALLED_APP_BUNDLE" ]]; then mv "$INSTALLED_APP_BUNDLE" "$PREVIOUS_APP_BUNDLE"; fi
 if ! mv "$STAGED_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"; then
     if [[ -e "$PREVIOUS_APP_BUNDLE" ]]; then mv "$PREVIOUS_APP_BUNDLE" "$INSTALLED_APP_BUNDLE"; fi

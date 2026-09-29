@@ -84,7 +84,7 @@ struct SettingsView: View {
                 windowControl(color: SettingsPalette.minimizeButton, label: "最小化") { NSApp.keyWindow?.miniaturize(nil) }
                 windowControl(color: SettingsPalette.zoomButton, label: "缩放") { NSApp.keyWindow?.zoom(nil) }
             }
-            Text("Codex Notch 设置")
+            Text("Codex 悬浮助手 设置")
                 .font(fontSettings.font(size: 15, weight: .semibold))
                 .foregroundStyle(SettingsPalette.primaryText.opacity(0.9))
                 .padding(.leading, 20)
@@ -151,7 +151,7 @@ struct SettingsView: View {
                 .background(controlSurface)
                 .overlay(alignment: .trailing) { menuChevron }
             }
-            Text("预览：  Codex Notch 字体显示")
+            Text("预览：  Codex 悬浮助手 字体显示")
                 .font(fontSettings.font(size: 13, weight: .medium))
                 .foregroundStyle(SettingsPalette.secondaryText)
             HStack(spacing: 14) {
@@ -540,7 +540,7 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
             window.styleMask.insert(.fullSizeContentView)
             window.styleMask.insert(.miniaturizable)
             window.styleMask.insert(.resizable)
-            window.title = "Codex Notch 设置"
+            window.title = "Codex 悬浮助手 设置"
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none

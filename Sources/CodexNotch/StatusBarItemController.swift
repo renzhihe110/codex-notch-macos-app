@@ -380,7 +380,7 @@ final class StatusBarItemController: NSObject {
         petItem.submenu = NSMenu(title: "宠物")
         let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
         settingsItem.target = self
-        let quitItem = NSMenuItem(title: "退出 Codex Notch", action: #selector(handleQuit), keyEquivalent: "")
+        let quitItem = NSMenuItem(title: "退出 Codex 悬浮助手", action: #selector(handleQuit), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(switchItem)
         menu.addItem(.separator())

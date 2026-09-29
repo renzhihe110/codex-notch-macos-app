@@ -28,6 +28,8 @@ struct NotchView: View {
     @ObservedObject var model: NotchViewModel
     let onSelectSession: (CodexSession) -> Void
     let onOpenSettings: () -> Void
+    // 通过 Codex 官方操作统一清除全部聊天的未读标记。
+    let onClearAllUnread: () -> Void
     let onQuit: () -> Void
     let onToggleMode: () -> Void
     let onTogglePin: () -> Void
@@ -68,7 +70,7 @@ struct NotchView: View {
                 onOpenSettings()
             }
             Divider()
-            Button("退出 Codex Notch") {
+            Button("退出 Codex 悬浮助手") {
                 onQuit()
             }
         }
@@ -155,6 +157,9 @@ struct NotchView: View {
                     .help(jumpError)
             }
             Spacer(minLength: 0)
+            // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
+            floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
+                .accessibilityLabel("清除所有聊天未读标记")
             floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, action: onTogglePin)
             floatingHeaderButton(systemName: "gearshape", help: "打开设置", action: onOpenSettings)
             floatingHeaderButton(systemName: "xmark", help: "关闭面板", action: onClose)

@@ -421,7 +421,7 @@
   - Expected: 三种状态、黄色动画和点击居中交互均符合验收标准；在取得人工证据前不得声称运行期视觉或动画 QA 已通过。
   - Evidence: pending
 - [ ] **Validation 11: 用户实际打包产物的许可落包验收**
-  - Verify: 由于约束禁止自动编译/打包，由用户执行现有 `scripts/package_app.sh` 后，对生成的 `dist/Codex Notch.app/Contents/Resources` 做只读检查，确认 CodexNotch SwiftPM 资源 bundle、六张 PNG、完整 `LICENSE.txt` 和 `THIRD_PARTY_NOTICES.md` 存在；对产物内六张图片和许可证重新计算 SHA-256，并与 Validation 8 的固定值一致，核对 notice 含上游 URL、commit、修改/使用方式和非商业限制。
+  - Verify: 由于约束禁止自动编译/打包，由用户执行现有 `scripts/package_app.sh` 后，对生成的 `dist/Codex 悬浮助手.app/Contents/Resources` 做只读检查，确认 CodexNotch SwiftPM 资源 bundle、六张 PNG、完整 `LICENSE.txt` 和 `THIRD_PARTY_NOTICES.md` 存在；对产物内六张图片和许可证重新计算 SHA-256，并与 Validation 8 的固定值一致，核对 notice 含上游 URL、commit、修改/使用方式和非商业限制。
   - Expected: 最终 `.app` 离线可加载全部猫咪素材，并实际携带原样的完整许可证与清晰归属说明；取得该产物证据前不得声称打包分发许可验收通过。
   - Evidence: pending
 - [ ] **Validation 12: 悬浮外壳边缘修订验收**

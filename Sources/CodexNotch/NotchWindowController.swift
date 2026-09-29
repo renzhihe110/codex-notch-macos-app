@@ -171,7 +171,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 双击窗口足够覆盖自然连按，同时保持单次触发即时响应。
     private static let doubleHotKeyInterval: TimeInterval = 0.4
 
-    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onDoubleHotKey: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
+    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onClearAllUnread: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onDoubleHotKey: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
         self.viewModel = NotchViewModel(state: initialState, collapsedHeight: collapsedSize.height)
         self.hotKeySettings = hotKeySettings
@@ -194,7 +194,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         // 默认不允许拖动刘海入口；悬浮 Dashboard 展开后再启用背景拖动。
         window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
-        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
+        // 将清除未读操作交给应用层，窗口不直接修改 Codex 状态。
+        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
             self?.toggleFloatingPanelPin()
         }, onClose: { [weak self] in
             self?.closeFloatingPanel()
@@ -486,7 +487,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         switchItem.target = self
         let settingsItem = NSMenuItem(title: "设置...", action: #selector(handleOpenSettings), keyEquivalent: "")
         settingsItem.target = self
-        let quitItem = NSMenuItem(title: "退出 Codex Notch", action: #selector(handleQuit), keyEquivalent: "")
+        let quitItem = NSMenuItem(title: "退出 Codex 悬浮助手", action: #selector(handleQuit), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(switchItem)
         menu.addItem(.separator())

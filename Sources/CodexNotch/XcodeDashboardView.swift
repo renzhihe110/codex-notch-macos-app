@@ -180,7 +180,7 @@ struct XcodeDashboardView: View {
     private var availabilityTitle: String { switch manager.availability { case .loading: return "正在读取 IDE 窗口"; case .permissionRequired: return "需要辅助功能权限"; case .noSupportedEditorsRunning: return "Xcode 或 VS Code 尚未运行"; case .noProjectWindows: return "暂无项目窗口"; case .ready: return "IDE 窗口已就绪" } }
 
     // 空态说明只给当前问题的下一步，不添加功能宣传。
-    private var availabilityMessage: String { switch manager.availability { case .loading: return "正在同步项目、分支与本地目录"; case .permissionRequired: return "请允许 Codex Notch 读取并唤醒编辑器窗口"; case .noSupportedEditorsRunning: return "打开 Xcode 项目或 VS Code 工作区后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 或 VS Code 中打开项目或工作区"; case .ready: return "点击项目即可切换" } }
+    private var availabilityMessage: String { switch manager.availability { case .loading: return "正在同步项目、分支与本地目录"; case .permissionRequired: return "请允许 Codex 悬浮助手 读取并唤醒编辑器窗口"; case .noSupportedEditorsRunning: return "打开 Xcode 项目或 VS Code 工作区后，窗口会自动出现在这里"; case .noProjectWindows: return "请在 Xcode 或 VS Code 中打开项目或工作区"; case .ready: return "点击项目即可切换" } }
 
     // 底部提示说明行点击切换、顶部拖拽与边缘缩放，空态继续只展示当前可执行的下一步。
     private var footerText: String { switch manager.availability { case .loading: return "正在刷新 IDE 窗口"; case .ready: return "点击行切换 · 拖动顶部移动 · 拖动边缘缩放"; case .permissionRequired: return "授权后重新触发面板快捷键刷新窗口"; case .noSupportedEditorsRunning: return "等待 Xcode 或 VS Code 启动"; case .noProjectWindows: return "等待项目窗口打开" } }

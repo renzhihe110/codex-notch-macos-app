@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 // 负责从会话点击跳转到 Codex，优先保持用户在 Codex App 内。
@@ -10,6 +11,51 @@ final class JumpRouter {
 
     init(workspace: NSWorkspace = .shared) {
         self.workspace = workspace
+    }
+
+    // 使用官方 Shift+Esc 操作，不写入 Codex 的持久化文件或局部伪造已读状态。
+    func clearAllUnread(completion: @escaping (Result<Void, JumpRouterError>) -> Void) {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(options) else {
+            completion(.failure(.clearUnreadFailed("请在系统设置 → 隐私与安全性 → 辅助功能中允许 Codex 悬浮助手，然后再次点击按钮。")))
+            return
+        }
+        openInstalledCodexApp { [weak self] didOpen in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard didOpen, let app = NSRunningApplication.runningApplications(withBundleIdentifier: self.codexBundleIdentifier).first else {
+                    completion(.failure(.clearUnreadFailed("无法打开 Codex，请先启动 Codex 后重试。")))
+                    return
+                }
+                app.activate(options: [.activateIgnoringOtherApps])
+                self.sendClearUnreadShortcut(to: app, attemptsRemaining: 15, completion: completion)
+            }
+        }
+    }
+
+    // 等待目标应用进入前台后定向发送按键，避免快捷键落入其他应用或悬浮面板。
+    private func sendClearUnreadShortcut(to app: NSRunningApplication, attemptsRemaining: Int, completion: @escaping (Result<Void, JumpRouterError>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            guard !app.isTerminated, app.isActive else {
+                if !app.isTerminated && attemptsRemaining > 1 {
+                    self.sendClearUnreadShortcut(to: app, attemptsRemaining: attemptsRemaining - 1, completion: completion)
+                } else {
+                    completion(.failure(.clearUnreadFailed("Codex 未能进入前台，请打开 Codex 后重试。")))
+                }
+                return
+            }
+            guard let source = CGEventSource(stateID: .privateState), let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true), let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false) else {
+                completion(.failure(.clearUnreadFailed("无法发送清除快捷键，请在 Codex 中按 Shift + Esc。")))
+                return
+            }
+            keyDown.flags = .maskShift
+            keyUp.flags = .maskShift
+            keyDown.postToPid(app.processIdentifier)
+            keyUp.postToPid(app.processIdentifier)
+            // 这里只确认快捷键已发送，界面由后续官方未读快照刷新。
+            completion(.success(()))
+        }
     }
 
     // 构造 Codex App 已支持的 thread 深链，会被官方 App 映射到 /local/<thread-id>。
@@ -142,11 +188,15 @@ final class JumpRouter {
 // 给 UI 提供短错误，同时保留完整 thread id 方便用户手动处理。
 enum JumpRouterError: LocalizedError {
     case unavailable(threadID: String)
+    // 清除操作保留具体失败原因，便于用户处理权限或应用状态。
+    case clearUnreadFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let threadID):
             return "跳转失败，thread: \(threadID)"
+        case .clearUnreadFailed(let message):
+            return message
         }
     }
 }

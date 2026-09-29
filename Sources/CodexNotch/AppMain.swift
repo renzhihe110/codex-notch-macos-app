@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let tokenReader = CodexStoreReader()
     private let tokenRefreshQueue = DispatchQueue(label: "local.codex.notch.tokens", qos: .utility)
     private let jumpRouter = JumpRouter()
+    // 防止连续点击在 Codex 激活期间重复发送快捷键。
+    private var isClearingUnread = false
     private let alertNotifier = SessionAlertNotifier()
     private let hotKeySettings = HotKeySettings.shared
     private let capsuleSettings = CapsuleSettings.shared
@@ -63,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.jump(to: session)
         }, onOpenSettings: { [weak self] in
             self?.openSettings()
+        }, onClearAllUnread: { [weak self] in
+            self?.clearAllUnread()
         }, onQuit: {
             NSApp.terminate(nil)
         }, onToggleMode: { [weak self] in
@@ -176,6 +180,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindowController.show()
     }
 
+    // 触发官方清除操作后继续读取真实未读状态；失败时给出可见提示。
+    private func clearAllUnread() {
+        guard !isClearingUnread else { return }
+        isClearingUnread = true
+        notchWindowController?.clearJumpError()
+        jumpRouter.clearAllUnread { [weak self] result in
+            guard let self else { return }
+            self.isClearingUnread = false
+            switch result {
+            case .success:
+                self.refreshStatus()
+            case .failure(let error):
+                self.notchWindowController?.showJumpError(error.localizedDescription)
+                let alert = NSAlert()
+                alert.messageText = "未能清除未读标记"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "好")
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        }
+    }
+
     // 将会话点击交给跳转路由，并把失败原因反馈到展开面板顶部。
     private func jump(to session: CodexSession) {
         notchWindowController?.clearJumpError()
@@ -205,7 +232,7 @@ private final class SettingsWindowController: NSWindowController, NSWindowDelega
         // 使用 UI 稿对应的高窄比例和沉浸式标题栏，较小屏幕仍可通过内容滚动访问全部设置。
         let contentSize = CGSize(width: 470, height: 838)
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: contentSize), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "Codex Notch 设置"
+        window.title = "Codex 悬浮助手 设置"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none

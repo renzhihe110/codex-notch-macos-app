@@ -1,4 +1,4 @@
-# Codex Notch macOS App
+# Codex 悬浮助手 macOS App
 
 这是一个独立的 macOS SwiftPM MVP，用来在屏幕顶部展示 Codex 桌面刘海屏体验，并通过独立的 Xcode Dashboard 快速切换本机项目窗口。它只读读取本机 Codex 状态，收起时展示当前会话状态、标题和完成进度，存在运行中或等待处理的会话时会轮播提示；展开后展示最近会话列表，点击会话可尝试通过 Codex 深链回到对应工作上下文。
 
@@ -26,7 +26,7 @@
 
 ## 打包成 App
 
-在 `codex-notch-macos-app/` 目录下执行 `./scripts/package_app.sh` 可以生成 release 版 `dist/Codex Notch.app`，执行 `./scripts/package_app.sh debug` 可以生成 debug 版。每次打包完成后，脚本会安全替换并安装到 `/Applications/Codex Notch.app`；`./scripts/run.sh` 也会启动这个已安装版本。该 app bundle 默认使用 `local.codex.notch` 作为 bundle identifier，也可以通过 `BUNDLE_IDENTIFIER=... ./scripts/package_app.sh` 覆盖。产物是本地未签名 app，后续如果要分发还需要签名和 notarize。
+在 `codex-notch-macos-app/` 目录下执行 `./scripts/package_app.sh` 可以生成 release 版 `dist/Codex 悬浮助手.app`，执行 `./scripts/package_app.sh debug` 可以生成 debug 版。每次打包完成后，脚本会安全替换并安装到 `/Applications/Codex 悬浮助手.app`；`./scripts/run.sh` 也会启动这个已安装版本。该 app bundle 默认使用 `local.codex.notch` 作为 bundle identifier，也可以通过 `BUNDLE_IDENTIFIER=... ./scripts/package_app.sh` 覆盖。产物是本地未签名 app，后续如果要分发还需要签名和 notarize。
 
 发布 GitHub Release 前可通过 `APP_VERSION=0.2.0 BUILD_NUMBER=2 ./scripts/package_app.sh` 写入版本号，并使用 `v0.2.0` 形式创建 Release 标签。设置页的“检查更新”会读取公开仓库 `renzhihe110/codex-notch-macos-app` 的最新 Release；由于当前产物未签名，发现新版后只打开下载页，不会自动替换应用。
 
