@@ -1,4 +1,7 @@
 import AppKit
+import Combine
+import CoreText
+import SwiftUI
 
 // 管理可拖动悬浮球入口；它不使用 NSStatusItem，也不保存用户拖动位置。
 final class StatusBarItemController: NSObject {
@@ -10,6 +13,23 @@ final class StatusBarItemController: NSObject {
     private let onToggleMode: () -> Void
     private let capsuleSettings: CapsuleSettings
     private let petCatalog: CodexPetCatalog
+    // 角标复用官方未读集合，摘要只展示当前面板中的任务。
+    private let completionReadStore = CompletionReadStore.shared
+    private var completionReadObserver: AnyCancellable?
+    private var taskSummaryHostingView: NSHostingView<PetTaskSummaryView>?
+    private var isTaskSummarySuppressed = false
+    private lazy var taskSummaryPanel: NSPanel = {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .screenSaver
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        panel.ignoresMouseEvents = true
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        return panel
+    }()
     private var pet: CodexPet
     private var petTheme: CodexPetTheme?
     private var state: NotchState
@@ -33,7 +53,7 @@ final class StatusBarItemController: NSObject {
     private var pillSize: CGSize
 
     init(initialState: NotchState, capsuleSettings: CapsuleSettings, petCatalog: CodexPetCatalog, onActivate: @escaping (CGRect) -> Void, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void) {
-        let initialPillSize = capsuleSettings.size.dimensions
+        let initialPillSize = StatusPillView.windowSize(for: capsuleSettings.size.dimensions)
         let initialPetSelection = petCatalog.renderingSelection()
         self.state = initialState
         self.onActivate = onActivate
@@ -53,6 +73,7 @@ final class StatusBarItemController: NSObject {
         configureCapsuleSettingsObserver()
         configurePetCatalogObserver()
         configureCarouselTimer()
+        configureCompletionReadObserver()
         update(state: initialState)
     }
 
@@ -73,6 +94,7 @@ final class StatusBarItemController: NSObject {
     // 刷新宠物后台状态；交互动作完成后会自然恢复到这里的最新状态。
     func update(state: NotchState) {
         self.state = state
+        refreshTaskSummary()
         normalizeCarouselIndex()
         refreshPetAnimation()
         guard isEntryVisible else { return }
@@ -88,6 +110,7 @@ final class StatusBarItemController: NSObject {
         }
         refreshPetAnimation()
         window.orderFrontRegardless()
+        refreshTaskSummary()
     }
 
     // 隐藏悬浮球入口，同时清理未完成的拖动状态。
@@ -97,6 +120,8 @@ final class StatusBarItemController: NSObject {
         dragStartWindowOrigin = nil
         didDrag = false
         isHovered = false
+        isTaskSummarySuppressed = false
+        taskSummaryPanel.orderOut(nil)
         lookDirection = nil
         interactionPose = nil
         displayedPose = nil
@@ -122,6 +147,9 @@ final class StatusBarItemController: NSObject {
 
     // 悬浮球区分点击、拖动和右键菜单；只有普通点击才展开面板。
     private func configurePillView() {
+        // 整个入口作为同一个按钮暴露数量，角标不创建独立点击目标。
+        pillView.setAccessibilityElement(true)
+        pillView.setAccessibilityRole(.button)
         pillView.onMouseDown = { [weak self] event in self?.beginDrag(with: event) }
         pillView.onMouseDragged = { [weak self] event in self?.continueDrag(with: event) }
         pillView.onMouseUp = { [weak self] event in self?.endDrag(with: event) }
@@ -153,13 +181,57 @@ final class StatusBarItemController: NSObject {
         }
     }
 
+    // Published 在赋值前发送事件，切到主队列后读取已更新的官方未读状态。
+    private func configureCompletionReadObserver() {
+        completionReadObserver = completionReadStore.$unreadSessionIDs.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshTaskSummary()
+        }
+    }
+
+    // 计数和摘要共享最近 15 条主任务，运行态排除等待处理和停滞任务。
+    private func refreshTaskSummary() {
+        let sessions = state.sessions.prefix(15).sorted { $0.updatedAt > $1.updatedAt }
+        let runningSessions = sessions.filter { $0.lifecycle == .running && $0.attention == nil }
+        let unreadSessions = sessions.filter { completionReadStore.isUnread($0) }
+        pillView.runningTaskCount = runningSessions.count
+        pillView.unreadTaskCount = unreadSessions.count
+        pillView.setAccessibilityLabel("Codex 宠物，运行中 \(runningSessions.count) 个，待查看 \(unreadSessions.count) 个")
+        pillView.toolTip = pillView.hasTaskBadges ? nil : tooltipText
+        guard isEntryVisible, isHovered, !isTaskSummarySuppressed, dragStartMouseLocation == nil, pillView.hasTaskBadges else {
+            taskSummaryPanel.orderOut(nil)
+            return
+        }
+        let summaryView = PetTaskSummaryView(runningSessions: runningSessions, unreadSessions: unreadSessions)
+        if let taskSummaryHostingView {
+            taskSummaryHostingView.rootView = summaryView
+        } else {
+            let hostingView = PetTaskSummaryHostingView(rootView: summaryView)
+            taskSummaryHostingView = hostingView
+            taskSummaryPanel.contentView = hostingView
+        }
+        guard let taskSummaryHostingView else {
+            return
+        }
+        taskSummaryHostingView.layoutSubtreeIfNeeded()
+        let size = taskSummaryHostingView.fittingSize
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        var x = window.frame.maxX + 8
+        if x + size.width > visibleFrame.maxX - 8 {
+            x = window.frame.minX - size.width - 8
+        }
+        x = min(max(x, visibleFrame.minX + 8), visibleFrame.maxX - size.width - 8)
+        let y = min(max(window.frame.maxY - size.height, visibleFrame.minY + 8), visibleFrame.maxY - size.height - 8)
+        taskSummaryPanel.setFrame(CGRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        taskSummaryPanel.orderFrontRegardless()
+    }
+
     // 多个红黄灯会话时轮播 tooltip 目标，胶囊文字保持短小不挤占视觉空间。
     private func configureCarouselTimer() {
         carouselTimer?.invalidate()
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self, self.carouselSessions.count > 1 else { return }
             self.carouselIndex = (self.carouselIndex + 1) % self.carouselSessions.count
-            self.pillView.toolTip = self.tooltipText
+            self.pillView.toolTip = self.pillView.hasTaskBadges ? nil : self.tooltipText
         }
     }
 
@@ -191,7 +263,7 @@ final class StatusBarItemController: NSObject {
     private func refreshPetAnimation() {
         guard isEntryVisible else {
             stopPetAnimation()
-            pillView.toolTip = tooltipText
+            pillView.toolTip = pillView.hasTaskBadges ? nil : tooltipText
             return
         }
         let nextPose = effectivePose
@@ -201,7 +273,7 @@ final class StatusBarItemController: NSObject {
             renderPetFrameAndScheduleNext()
             return
         }
-        pillView.toolTip = tooltipText
+        pillView.toolTip = pillView.hasTaskBadges ? nil : tooltipText
     }
 
     // 根据每帧时长使用 common mode 单次调度，保证拖动和菜单跟踪期间动画仍可刷新。
@@ -211,7 +283,7 @@ final class StatusBarItemController: NSObject {
         let frames = frames(for: displayedPose)
         animationFrameIndex = min(animationFrameIndex, frames.count - 1)
         pillView.image = frames[animationFrameIndex]
-        pillView.toolTip = tooltipText
+        pillView.toolTip = pillView.hasTaskBadges ? nil : tooltipText
         guard frames.count > 1 else { return }
         let durations = displayedPose.frameDurations
         let duration = durations[min(animationFrameIndex, durations.count - 1)]
@@ -255,12 +327,13 @@ final class StatusBarItemController: NSObject {
     // 尺寸切换时围绕当前中心缩放，避免设置页操作让胶囊突然跳到别处。
     private func applyCapsuleSize(_ size: CapsuleSize) {
         let oldFrame = window.frame
-        pillSize = size.dimensions
+        pillSize = StatusPillView.windowSize(for: size.dimensions)
         pillView.frame = CGRect(origin: .zero, size: pillSize)
         let origin = isEntryVisible ? CGPoint(x: oldFrame.midX - pillSize.width / 2, y: oldFrame.midY - pillSize.height / 2) : oldFrame.origin
         window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
         guard isEntryVisible else { return }
         window.orderFrontRegardless()
+        refreshTaskSummary()
     }
 
     // 滚轮在现有三档尺寸间切换，并复用设置对象保存用户选择。
@@ -276,12 +349,15 @@ final class StatusBarItemController: NSObject {
         guard let screen = NSScreen.main else { return }
         pillView.frame = CGRect(origin: .zero, size: pillSize)
         let visibleFrame = screen.visibleFrame
-        let origin = CGPoint(x: visibleFrame.midX - pillSize.width / 2, y: visibleFrame.maxY - pillSize.height - 6)
+        let origin = CGPoint(x: visibleFrame.midX - pillView.petBounds.width / 2, y: visibleFrame.maxY - pillSize.height - 6)
         window.setFrame(CGRect(origin: origin, size: pillSize), display: true)
     }
 
     // 记录按下时的全局坐标和窗口原点，后续用全局坐标差值移动窗口。
     private func beginDrag(with event: NSEvent) {
+        // 点击或拖动开始后收起摘要，直到鼠标重新进入入口再展示。
+        isTaskSummarySuppressed = true
+        taskSummaryPanel.orderOut(nil)
         dragStartMouseLocation = NSEvent.mouseLocation
         dragStartWindowOrigin = window.frame.origin
         didDrag = false
@@ -324,6 +400,9 @@ final class StatusBarItemController: NSObject {
 
     // 右键菜单显示期间循环 review，菜单关闭后恢复最新后台或观察动作。
     private func showContextMenu(with event: NSEvent) {
+        // 右键菜单期间不叠加悬停摘要。
+        isTaskSummarySuppressed = true
+        taskSummaryPanel.orderOut(nil)
         pillView.isHighlighted = false
         pillView.needsDisplay = true
         interactionPose = .review
@@ -339,8 +418,10 @@ final class StatusBarItemController: NSObject {
     // 鼠标进入先完整播放一轮挥手，期间仍记录后续观察方向。
     private func mouseEntered(with event: NSEvent) {
         isHovered = true
+        isTaskSummarySuppressed = false
         updateLookDirection(with: event)
         beginOneShot(.waving)
+        refreshTaskSummary()
     }
 
     // 空闲悬停时将 AppKit 向上的坐标系量化为从正上方开始顺时针的 16 个方向。
@@ -353,6 +434,8 @@ final class StatusBarItemController: NSObject {
     // 鼠标移出只清除观察方向；已经开始的一次性动作仍会正常播完。
     private func mouseExited(with event: NSEvent) {
         isHovered = false
+        isTaskSummarySuppressed = false
+        taskSummaryPanel.orderOut(nil)
         lookDirection = nil
         refreshPetAnimation()
     }
@@ -360,9 +443,9 @@ final class StatusBarItemController: NSObject {
     // 中心死区使用 idle，外围按每 22.5° 就近取一个方向格。
     private func updateLookDirection(with event: NSEvent) {
         let point = pillView.convert(event.locationInWindow, from: nil)
-        let dx = point.x - pillView.bounds.midX
-        let dy = point.y - pillView.bounds.midY
-        let deadZone = min(pillView.bounds.width, pillView.bounds.height) * 0.12
+        let dx = point.x - pillView.petBounds.midX
+        let dy = point.y - pillView.petBounds.midY
+        let deadZone = min(pillView.petBounds.width, pillView.petBounds.height) * 0.12
         guard hypot(dx, dy) >= deadZone else {
             lookDirection = nil
             return
@@ -458,9 +541,42 @@ final class StatusBarItemController: NSObject {
     private func statusText(for session: CodexSession) -> String { session.statusLabel }
 }
 
+// 浮签圆角外保持透明，避免 NSHostingView 在面板角落绘制不透明底色。
+private final class PetTaskSummaryHostingView: NSHostingView<PetTaskSummaryView> {
+    override var isOpaque: Bool { false }
+}
+
 // 宠物入口绘制透明 v2 帧，并负责发送点击、拖动、右键和悬停事件。
 private final class StatusPillView: NSControl {
     var image: NSImage? { didSet { if oldValue !== image { needsDisplay = true } } }
+    // 数量变化只重绘角标，不影响现有宠物动画或鼠标事件。
+    var runningTaskCount = 0 {
+        didSet {
+            if oldValue != runningTaskCount {
+                needsDisplay = true
+            }
+        }
+    }
+    var unreadTaskCount = 0 {
+        didSet {
+            if oldValue != unreadTaskCount {
+                needsDisplay = true
+            }
+        }
+    }
+    // 角标及其预留区域统一放大 1.6 倍，宠物原始尺寸保持不变。
+    private static let taskBadgeScale: CGFloat = 1.6
+    private static let badgeAreaWidth: CGFloat = 36 * taskBadgeScale
+    var hasTaskBadges: Bool { runningTaskCount > 0 || unreadTaskCount > 0 }
+
+    // 独立预留右侧角标区域，三档宠物都保持原来的图像尺寸。
+    static func windowSize(for petSize: CGSize) -> CGSize {
+        CGSize(width: petSize.width + badgeAreaWidth, height: petSize.height)
+    }
+
+    var petBounds: CGRect {
+        CGRect(x: 0, y: 0, width: bounds.width - Self.badgeAreaWidth, height: bounds.height)
+    }
     var onMouseDown: ((NSEvent) -> Void)?
     var onMouseDragged: ((NSEvent) -> Void)?
     var onMouseUp: ((NSEvent) -> Void)?
@@ -523,10 +639,56 @@ private final class StatusPillView: NSControl {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard let image, image.size.width > 0, image.size.height > 0 else { return }
-        let targetBounds = bounds.insetBy(dx: 2, dy: 2)
+        let targetBounds = petBounds.insetBy(dx: 2, dy: 2)
         let scale = min(targetBounds.width / image.size.width, targetBounds.height / image.size.height)
         let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
         let targetRect = NSRect(x: targetBounds.midX - targetSize.width / 2, y: targetBounds.minY, width: targetSize.width, height: targetSize.height)
         image.draw(in: targetRect, from: .zero, operation: .sourceOver, fraction: isHighlighted ? 0.78 : 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        drawTaskBadges()
+    }
+
+    // 零值不绘制；只有一类任务时统一贴到右上角，不留下空行。
+    private func drawTaskBadges() {
+        let scale = Self.taskBadgeScale
+        var y = bounds.maxY - 22 * scale
+        if runningTaskCount > 0 {
+            drawTaskBadge(count: runningTaskCount, symbol: "play.fill", color: NSColor(calibratedRed: 0.79, green: 0.48, blue: 0.08, alpha: 1), y: y)
+            y -= 24 * scale
+        }
+        if unreadTaskCount > 0 {
+            drawTaskBadge(count: unreadTaskCount, symbol: "tray.fill", color: NSColor(calibratedRed: 0.035, green: 0.424, blue: 0.839, alpha: 1), y: y)
+        }
+    }
+
+    // 图标与数字直接绘制在同一控件上，点击和拖动自然沿用宠物入口行为。
+    private func drawTaskBadge(count: Int, symbol: String, color: NSColor, y: CGFloat) {
+        let scale = Self.taskBadgeScale
+        let rect = CGRect(x: petBounds.maxX + 2 * scale, y: y, width: 32 * scale, height: 20 * scale)
+        color.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 10 * scale, yRadius: 10 * scale).fill()
+        let configuration = NSImage.SymbolConfiguration(pointSize: 10 * scale, weight: .semibold).applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        let icon = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+        let iconBounds = icon?.alignmentRect ?? .zero
+        let iconScale = 10 * scale / max(1, max(iconBounds.width, iconBounds.height))
+        let iconWidth = iconBounds.width * iconScale
+        let spacing: CGFloat = iconWidth > 0 ? 3 * scale : 0
+
+        // 用可见字形和符号轮廓计算整组中心，避免画布留白和数字位数改变对齐。
+        let text = NSAttributedString(string: String(count), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11 * scale, weight: .semibold), NSAttributedString.Key(kCTForegroundColorAttributeName as String): NSColor.white.cgColor])
+        let line = CTLineCreateWithAttributedString(text)
+        let textBounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+        let contentX = rect.midX - (iconWidth + spacing + textBounds.width) / 2
+        if let icon {
+            let iconRect = CGRect(x: contentX - iconBounds.minX * iconScale, y: rect.midY - iconBounds.midY * iconScale, width: icon.size.width * iconScale, height: icon.size.height * iconScale)
+            icon.draw(in: iconRect)
+        }
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+        context.saveGState()
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: contentX + iconWidth + spacing - textBounds.minX, y: rect.midY - textBounds.midY)
+        CTLineDraw(line, context)
+        context.restoreGState()
     }
 }
