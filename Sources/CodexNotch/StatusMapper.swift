@@ -14,8 +14,8 @@ enum StatusMapper {
     // 只有明确完成才使用绿色；未知和停止保留黄色及各自文案。
     static func status(for session: CodexSession) -> SessionStatus { switch session.lifecycle { case .completed: return session.isCompleted ? .green : .yellow; case .failed, .waitingInput: return .red; case .unknown, .running, .stopped: return .yellow } }
 
-    // 复制当前轮次和真实活动时间，供全部视图及通知使用同一状态依据。
-    private static func mappedSession(_ session: CodexSession, now: Date) -> CodexSession { CodexSession(id: session.id, name: session.name, title: session.title, cwd: session.cwd, createdAt: session.createdAt, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, completionEventAt: session.completionEventAt, lifecycle: session.lifecycle, lastActivityAt: session.lastActivityAt, status: status(for: session), attention: attention(for: session, now: now)) }
+    // 复制主/侧线程类型、当前轮次和真实活动时间，供全部视图及通知使用同一状态依据。
+    private static func mappedSession(_ session: CodexSession, now: Date) -> CodexSession { CodexSession(id: session.id, name: session.name, threadKind: session.threadKind, title: session.title, cwd: session.cwd, createdAt: session.createdAt, updatedAt: session.updatedAt, lastEvent: session.lastEvent, errorHint: session.errorHint, latestMessage: session.latestMessage, completionEventAt: session.completionEventAt, lifecycle: session.lifecycle, lastActivityAt: session.lastActivityAt, status: status(for: session), attention: attention(for: session, now: now)) }
 
     // 只有运行中的任务才检查十分钟停滞；未知、完成和停止不会触发误提醒。
     private static func attention(for session: CodexSession, now: Date) -> SessionAttention? { if session.lifecycle == .waitingInput { return .waitingInput }; guard session.lifecycle == .running, let lastActivityAt = session.lastActivityAt, now.timeIntervalSince(lastActivityAt) >= 10 * 60 else { return nil }; return .stalled }

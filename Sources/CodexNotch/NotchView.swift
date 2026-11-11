@@ -255,10 +255,17 @@ struct NotchView: View {
                     .frame(width: 30, height: 30)
                     .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(floatingTaskStatusBackground(session)))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(session.displayTitle)
-                        .font(fontSettings.font(size: 19.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.94))
-                        .lineLimit(1)
+                    // 类型标签独立于状态胶囊，同名任务也能识别主线程和侧边栏。
+                    HStack(spacing: 6) {
+                        Text(session.displayTitle)
+                            .font(fontSettings.font(size: 19.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.94))
+                            .lineLimit(1)
+                        if let threadKind = session.threadKind {
+                            SessionThreadKindBadge(kind: threadKind, scale: 1)
+                                .font(fontSettings.font(size: 11, weight: .medium))
+                        }
+                    }
                     // 项目目录单独着色并放在开头，保证长消息截断后仍可识别。
                     HStack(spacing: 0) { Text(session.cwdHint).foregroundStyle(directoryColorSettings.color); Text(floatingTaskSubtitleDetails(session)) }
                         .font(fontSettings.font(size: 15))
@@ -571,6 +578,40 @@ struct NotchView: View {
     }
 }
 
+// 两处任务列表共用香槟金/雾蓝类型标签，固定文字宽度以免被长标题挤掉。
+private struct SessionThreadKindBadge: View {
+    let kind: SessionThreadKind
+    let scale: CGFloat
+
+    // 对齐用户选中的第二版配色，文字、底色和描边按类型成组使用。
+    private var palette: (text: Color, fill: Color, border: Color) {
+        switch kind {
+        case .main:
+            return (
+                Color(red: 233 / 255, green: 213 / 255, blue: 163 / 255),
+                Color(red: 51 / 255, green: 44 / 255, blue: 31 / 255),
+                Color(red: 109 / 255, green: 92 / 255, blue: 54 / 255)
+            )
+        case .sidebar:
+            return (
+                Color(red: 171 / 255, green: 203 / 255, blue: 213 / 255),
+                Color(red: 32 / 255, green: 48 / 255, blue: 57 / 255),
+                Color(red: 65 / 255, green: 97 / 255, blue: 110 / 255)
+            )
+        }
+    }
+
+    var body: some View {
+        Text(kind.rawValue)
+            .foregroundStyle(palette.text)
+            .padding(.horizontal, 5 * scale)
+            .padding(.vertical, 2 * scale)
+            .background(RoundedRectangle(cornerRadius: 4 * scale, style: .continuous).fill(palette.fill))
+            .overlay(RoundedRectangle(cornerRadius: 4 * scale, style: .continuous).strokeBorder(palette.border, lineWidth: 1))
+            .fixedSize()
+    }
+}
+
 // 单行会话信息，保持紧凑的桌面工具风格。
 private struct SessionRow: View {
     let session: CodexSession
@@ -586,10 +627,17 @@ private struct SessionRow: View {
                 .frame(width: 14 * scale, alignment: .center)
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: 2 * scale) {
-                    Text(session.displayTitle)
-                        .font(fontSettings.font(size: 14 * scale))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .lineLimit(1)
+                    // 刘海展开列表沿用相同分类，避免切换入口后丢失任务来源提示。
+                    HStack(spacing: 6 * scale) {
+                        Text(session.displayTitle)
+                            .font(fontSettings.font(size: 14 * scale))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                        if let threadKind = session.threadKind {
+                            SessionThreadKindBadge(kind: threadKind, scale: scale)
+                                .font(fontSettings.font(size: 9 * scale, weight: .medium))
+                        }
+                    }
                     if let latestMessage = session.latestMessage {
                         Text(latestMessage)
                             .font(fontSettings.font(size: 11 * scale))

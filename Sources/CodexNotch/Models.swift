@@ -10,6 +10,12 @@ enum SessionStatus: String, Equatable {
 // 任务生命周期与颜色分开保存，未知和停止状态都不能作为完成依据。
 enum SessionLifecycle: String, Equatable { case unknown, running, waitingInput, completed, stopped, failed }
 
+// 主线程和侧边栏会话按 Codex 的附属关系区分，与任务生命周期独立。
+enum SessionThreadKind: String, Equatable {
+    case main = "主线程"
+    case sidebar = "侧边栏"
+}
+
 // 表示会话里更需要用户注意的原因，供 UI 文案和本地通知复用。
 enum SessionAttention: String, Equatable {
     case waitingInput
@@ -39,6 +45,8 @@ struct CodexSession: Identifiable, Equatable {
     let id: String
     // Codex 任务列表生成的短标题；旧数据库可能没有该字段。
     let name: String?
+    // 缺少附属关系字段时保持未知，不把旧数据库或索引兜底误标为主线程。
+    let threadKind: SessionThreadKind?
     let title: String
     let cwd: String
     // 创建时间保留原始元数据，最后活动时间用于可见任务排序、文案和状态判断。
