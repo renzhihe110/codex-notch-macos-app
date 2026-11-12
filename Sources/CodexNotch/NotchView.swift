@@ -33,6 +33,8 @@ struct NotchView: View {
     let onQuit: () -> Void
     let onToggleMode: () -> Void
     let onTogglePin: () -> Void
+    // 大小窗共用同一窗口，由控制器同步原生尺寸与布局模式。
+    let onToggleCompactMode: () -> Void
     let onClose: () -> Void
     // 监听共享字体偏好，确保刘海和悬浮面板会即时应用新字体。
     @ObservedObject private var fontSettings = FontSettings.shared
@@ -116,8 +118,190 @@ struct NotchView: View {
 
     // 悬浮模式按用户保存的尺寸显示单列 Dashboard，不再绘制宠物和面板之间的连接段。
     private var floatingDashboard: some View {
-        floatingCard
-            .frame(width: floatingDashboardSettings.size.width, height: floatingDashboardSettings.size.height)
+        Group {
+            if floatingDashboardSettings.isCompact {
+                compactFloatingCard
+            } else {
+                floatingCard
+            }
+        }
+        .frame(width: floatingDashboardSettings.size.width, height: floatingDashboardSettings.size.height)
+    }
+
+    // 精简小窗保留标题栏、两行任务和原有运行动画，不显示汇总、Token 或底部入口。
+    private var compactFloatingCard: some View {
+        VStack(spacing: 0) {
+            compactFloatingHeader
+                .frame(height: 32)
+            Rectangle()
+                .fill(Color.white.opacity(0.12))
+                .frame(height: 1)
+            compactFloatingTaskList
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+        .frame(width: floatingDashboardSettings.size.width, height: floatingDashboardSettings.size.height)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(red: 0.035, green: 0.043, blue: 0.051)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    // 小窗只显示恢复、图钉和关闭按钮，设置继续通过原有右键菜单打开。
+    private var compactFloatingHeader: some View {
+        HStack(spacing: 5) {
+            floatingAssistantIcon
+                .font(fontSettings.font(size: 18, weight: .semibold))
+                .foregroundStyle(Color(red: 0.20, green: 0.78, blue: 1.0))
+                .frame(width: 20, height: 20)
+            Text("Codex 悬浮助手")
+                .font(fontSettings.font(size: 14, weight: .semibold))
+                .lineLimit(1)
+            if let error = model.jumpError ?? model.state.errorMessage {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(fontSettings.font(size: 10))
+                    .foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.58))
+                    .help(error)
+            }
+            Spacer(minLength: 0)
+            floatingHeaderButton(systemName: "arrow.up.left.and.arrow.down.right", help: "恢复完整窗口", size: 22, action: onToggleCompactMode)
+            floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, size: 22, action: onTogglePin)
+            floatingHeaderButton(systemName: "xmark", help: "关闭面板", size: 22, action: onClose)
+        }
+    }
+
+    // 保持最近活动顺序和现有读取上限，超过约四条时在小窗内部滚动。
+    private var compactFloatingTaskList: some View {
+        Group {
+            if floatingVisibleSessions.isEmpty {
+                Text("暂无任务")
+                    .font(fontSettings.font(size: 14))
+                    .foregroundStyle(.white.opacity(0.40))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(floatingVisibleSessions) { session in
+                                compactFloatingTaskRow(session)
+                                    .id(session.id)
+                            }
+                        }
+                    }
+                    // never 覆盖 macOS 鼠标输入时的显示策略，仅隐藏外观，不禁用滚动。
+                    .scrollIndicators(.never)
+                    .onAppear {
+                        scrollCompactSelection(using: proxy)
+                    }
+                    .onChange(of: model.selectedSessionIndex) { _ in
+                        scrollCompactSelection(using: proxy)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // 键盘移动时滚动到真实选中会话，避免回车打开看不见的任务。
+    private func scrollCompactSelection(using proxy: ScrollViewProxy) {
+        let sessions = floatingVisibleSessions
+        guard sessions.indices.contains(model.selectedSessionIndex) else {
+            return
+        }
+        proxy.scrollTo(sessions[model.selectedSessionIndex].id, anchor: .center)
+    }
+
+    // 使用整数大字号和更清晰的字重；标题仍限制为约十二个 16pt 中文字宽。
+    private func compactFloatingTaskRow(_ session: CodexSession) -> some View {
+        let isSelected = model.state.sessions.indices.contains(model.selectedSessionIndex) && model.state.sessions[model.selectedSessionIndex].id == session.id
+        return Button {
+            onSelectSession(session)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: compactFloatingTaskSymbol(session))
+                    .font(fontSettings.font(size: 16, weight: .semibold))
+                    .foregroundStyle(completionReadStore.isUnread(session) ? Color(red: 0.18, green: 0.58, blue: 1.0) : floatingTaskColor(session))
+                    .frame(width: 20, height: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.displayTitle)
+                        .font(fontSettings.font(size: 16, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.94))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 192, alignment: .leading)
+                    HStack(spacing: 4) {
+                        Text(session.cwdHint)
+                            .font(fontSettings.font(size: 12, weight: .medium))
+                            .foregroundStyle(directoryColorSettings.color)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(-1)
+                            .help(session.cwd)
+                        if let threadKind = session.threadKind {
+                            Text("·")
+                                .foregroundStyle(.white.opacity(0.40))
+                            SessionThreadKindBadge(kind: threadKind, scale: 1, isCompact: true)
+                                .font(fontSettings.font(size: 11, weight: .medium))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(compactFloatingStatusText(session))
+                    .font(fontSettings.font(size: 13, weight: .medium))
+                    .foregroundStyle(floatingStatusForeground(session))
+                    .padding(.horizontal, 6)
+                    .frame(height: 24)
+                    .background(Capsule().fill(floatingStatusBackground(session)))
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 44)
+            .background(ZStack {
+                isFloatingTaskRunning(session) ? floatingTaskStatusBackground(session).opacity(0.45) : Color.white.opacity(isSelected ? 0.04 : 0)
+                // 复用完整面板的运行态粒子与效果偏好，动画只绘制在当前行文字下方。
+                if isFloatingTaskRunning(session) {
+                    RunningTaskParticleBackground(effect: particleEffectSettings.effect)
+                }
+            }.clipped())
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(height: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(session.displayTitle)\n\(session.cwd)")
+    }
+
+    // 小窗图标按生命周期显示，完成和待查看共用对齐的圆形对勾。
+    private func compactFloatingTaskSymbol(_ session: CodexSession) -> String {
+        switch session.lifecycle {
+        case .running:
+            return "gearshape.2"
+        case .completed:
+            return session.isCompleted ? "checkmark.circle" : "questionmark.circle"
+        case .waitingInput, .failed:
+            return "exclamationmark.circle"
+        case .stopped:
+            return "stop.circle"
+        case .unknown:
+            return "questionmark.circle"
+        }
+    }
+
+    // 只缩短可信运行和完成文案，未知、等待、失败等状态继续保留原语义。
+    private func compactFloatingStatusText(_ session: CodexSession) -> String {
+        if completionReadStore.isUnread(session) {
+            return "待查看"
+        }
+        if isFloatingTaskRunning(session) {
+            return "运行"
+        }
+        if session.isCompleted {
+            return "完成"
+        }
+        return session.statusLabel
     }
 
     // Dashboard 卡片使用完整黑色圆角外壳，内部直接排列任务行和底部 Token 摘要。
@@ -149,6 +333,7 @@ struct NotchView: View {
             Text("Codex 悬浮助手")
                 .font(fontSettings.font(size: 16, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.95))
+                .lineLimit(1)
             // 跳转失败保留在标题栏提示，避免移除任务分组后丢失反馈。
             if let jumpError = model.jumpError {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -157,6 +342,8 @@ struct NotchView: View {
                     .help(jumpError)
             }
             Spacer(minLength: 0)
+            // 完整面板提供精简入口，原有清未读、图钉、设置和关闭继续保留。
+            floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
             // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
             floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
                 .accessibilityLabel("清除所有聊天未读标记")
@@ -176,16 +363,18 @@ struct NotchView: View {
         }
     }
 
-    private func floatingHeaderButton(systemName: String, help: String, isActive: Bool = false, action: @escaping () -> Void) -> some View {
+    // 两种标题栏复用按钮行为，小窗按比例收紧图标与点击区域。
+    private func floatingHeaderButton(systemName: String, help: String, isActive: Bool = false, size: CGFloat = 26, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(fontSettings.font(size: 13, weight: .semibold))
+                .font(fontSettings.font(size: 13 * size / 26, weight: .semibold))
                 .foregroundStyle(isActive ? Color(red: 0.44, green: 0.76, blue: 1.0) : .white.opacity(0.66))
-                .frame(width: 26, height: 26)
+                .frame(width: size, height: size)
                 .background(Circle().fill(isActive ? Color(red: 0.08, green: 0.28, blue: 0.68).opacity(0.70) : Color.clear))
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     // 主区最多展示 15 条真实主任务，超过可视区域时在卡片内滚动。
@@ -582,6 +771,8 @@ struct NotchView: View {
 private struct SessionThreadKindBadge: View {
     let kind: SessionThreadKind
     let scale: CGFloat
+    // 小窗使用确认图中的“侧边聊天”，其他列表保持现有“侧边栏”文案。
+    var isCompact: Bool = false
 
     // 对齐用户选中的第二版配色，文字、底色和描边按类型成组使用。
     private var palette: (text: Color, fill: Color, border: Color) {
@@ -602,7 +793,7 @@ private struct SessionThreadKindBadge: View {
     }
 
     var body: some View {
-        Text(kind.rawValue)
+        Text(kind == .sidebar && isCompact ? "侧边聊天" : kind.rawValue)
             .foregroundStyle(palette.text)
             .padding(.horizontal, 5 * scale)
             .padding(.vertical, 2 * scale)

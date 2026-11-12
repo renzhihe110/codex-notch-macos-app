@@ -197,6 +197,8 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         // 将清除未读操作交给应用层，窗口不直接修改 Codex 状态。
         let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
             self?.toggleFloatingPanelPin()
+        }, onToggleCompactMode: { [weak self] in
+            self?.toggleFloatingCompactMode()
         }, onClose: { [weak self] in
             self?.closeFloatingPanel()
         }))
@@ -407,6 +409,26 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         viewModel.isPinned.toggle()
     }
 
+    // 大小窗原地切换并保持左上角和常驻状态，恢复大窗时将边缘夹回当前屏幕。
+    private func toggleFloatingCompactMode() {
+        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else {
+            return
+        }
+        let previousFrame = window.frame
+        floatingDashboardSettings.update(size: previousFrame.size)
+        floatingDashboardSettings.toggleCompactMode()
+        let size = floatingDashboardSettings.size
+        setFloatingDashboardResizable(true)
+        var origin = CGPoint(x: previousFrame.minX, y: previousFrame.maxY - size.height)
+        if let screen = window.screen ?? NSScreen.main {
+            let visibleFrame = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+            origin.x = min(max(origin.x, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - size.width))
+            origin.y = min(max(origin.y, visibleFrame.minY), max(visibleFrame.minY, visibleFrame.maxY - size.height))
+        }
+        window.setFrame(CGRect(origin: origin, size: size), display: true)
+        normalizeSelectedSessionIndex()
+    }
+
     // 关闭按钮是显式操作，即使面板已固定也立即收起并清除固定状态。
     private func closeFloatingPanel() {
         viewModel.isPinned = false
@@ -473,7 +495,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         if isResizable {
             window.styleMask.insert(.resizable)
-            window.minSize = FloatingDashboardSettings.minimumSize
+            window.minSize = floatingDashboardSettings.currentMinimumSize
             window.maxSize = FloatingDashboardSettings.maximumSize
         } else {
             window.styleMask.remove(.resizable)
@@ -634,7 +656,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    // 选中行只在当前可见 8 条会话内移动，避免键盘进入隐藏数据。
+    // 选中行只在当前布局可访问的会话内移动，避免键盘进入隐藏数据。
     private func moveSelectedSession(by delta: Int) {
         let count = visibleSessionCount
         guard count > 0 else {
@@ -661,7 +683,9 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var visibleSessionCount: Int {
-        min(viewModel.state.sessions.count, NotchWindowMetrics.visibleSessionLimit)
+        // 小窗可滚动查看全部 15 条，键盘选择不能停在原有的八条上限。
+        let limit = viewModel.isPresentedFromCapsule && floatingDashboardSettings.isCompact ? 15 : NotchWindowMetrics.visibleSessionLimit
+        return min(viewModel.state.sessions.count, limit)
     }
 
     // AppKit 键盘事件的固定 keyCode，集中放置避免散落魔法数字。

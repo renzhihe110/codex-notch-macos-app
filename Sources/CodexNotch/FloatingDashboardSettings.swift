@@ -1,26 +1,67 @@
 import Combine
 import Foundation
 
-// 保存悬浮 Dashboard 的用户尺寸，确保窗口重开后沿用最近一次缩放结果。
+// 保存完整面板和精简小窗各自的尺寸，窗口重开后沿用最近选择的模式。
 final class FloatingDashboardSettings: ObservableObject {
     static let shared = FloatingDashboardSettings()
     static let defaultSize = CGSize(width: 460, height: 396)
     static let minimumSize = CGSize(width: 360, height: 260)
     static let maximumSize = CGSize(width: 960, height: 720)
+    // 放大文字后同步提高小窗下限，旧尺寸恢复时也能容纳四条清晰的双行任务。
+    static let compactDefaultSize = CGSize(width: 320, height: 230)
     private static let widthDefaultsKey = "CodexNotch.floatingDashboard.width"
     private static let heightDefaultsKey = "CodexNotch.floatingDashboard.height"
+    private static let compactWidthDefaultsKey = "CodexNotch.floatingDashboard.compactWidth"
+    private static let compactHeightDefaultsKey = "CodexNotch.floatingDashboard.compactHeight"
+    private static let compactModeDefaultsKey = "CodexNotch.floatingDashboard.isCompact"
     @Published private(set) var size: CGSize
+    @Published private(set) var isCompact: Bool
     private let defaults: UserDefaults
 
-    // 初始化时恢复有效的已保存尺寸，未保存时使用原有卡片尺寸。
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults; self.size = Self.loadSize(from: defaults) }
+    // 原有尺寸键继续供完整面板使用，未选择小窗的用户保持现有布局。
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let isCompact = defaults.bool(forKey: Self.compactModeDefaultsKey)
+        self.isCompact = isCompact
+        self.size = Self.loadSize(from: defaults, isCompact: isCompact)
+    }
+
+    // 小窗允许缩到设计尺寸，完整面板保持原有的最小窗口限制。
+    var currentMinimumSize: CGSize {
+        isCompact ? Self.compactDefaultSize : Self.minimumSize
+    }
 
     // 窗口缩放结束后保存限制范围内的尺寸，并通知 SwiftUI 同步布局。
-    func update(size: CGSize) { let clampedSize = Self.clampedSize(size); guard self.size != clampedSize else { return }; self.size = clampedSize; defaults.set(clampedSize.width, forKey: Self.widthDefaultsKey); defaults.set(clampedSize.height, forKey: Self.heightDefaultsKey) }
+    func update(size: CGSize) {
+        let clampedSize = Self.clampedSize(size, isCompact: isCompact)
+        guard self.size != clampedSize else {
+            return
+        }
+        self.size = clampedSize
+        defaults.set(clampedSize.width, forKey: isCompact ? Self.compactWidthDefaultsKey : Self.widthDefaultsKey)
+        defaults.set(clampedSize.height, forKey: isCompact ? Self.compactHeightDefaultsKey : Self.heightDefaultsKey)
+    }
+
+    // 切换时加载另一种模式的尺寸，不覆盖用户已经保存的完整面板大小。
+    func toggleCompactMode() {
+        isCompact.toggle()
+        defaults.set(isCompact, forKey: Self.compactModeDefaultsKey)
+        size = Self.loadSize(from: defaults, isCompact: isCompact)
+    }
 
     // 恢复尺寸时拒绝缺失或无效数值，避免异常偏好把窗口缩到不可用大小。
-    private static func loadSize(from defaults: UserDefaults) -> CGSize { guard defaults.object(forKey: widthDefaultsKey) != nil, defaults.object(forKey: heightDefaultsKey) != nil else { return defaultSize }; return clampedSize(CGSize(width: defaults.double(forKey: widthDefaultsKey), height: defaults.double(forKey: heightDefaultsKey))) }
+    private static func loadSize(from defaults: UserDefaults, isCompact: Bool) -> CGSize {
+        let widthKey = isCompact ? compactWidthDefaultsKey : widthDefaultsKey
+        let heightKey = isCompact ? compactHeightDefaultsKey : heightDefaultsKey
+        guard defaults.object(forKey: widthKey) != nil, defaults.object(forKey: heightKey) != nil else {
+            return isCompact ? compactDefaultSize : defaultSize
+        }
+        return clampedSize(CGSize(width: defaults.double(forKey: widthKey), height: defaults.double(forKey: heightKey)), isCompact: isCompact)
+    }
 
-    // 尺寸限制保持标题栏、任务行和底部 Token 摘要在缩放后仍可用。
-    private static func clampedSize(_ size: CGSize) -> CGSize { CGSize(width: min(max(size.width, minimumSize.width), maximumSize.width), height: min(max(size.height, minimumSize.height), maximumSize.height)) }
+    // 两种模式共用原生缩放上限，小窗至少容纳标题栏和约四条紧凑任务。
+    private static func clampedSize(_ size: CGSize, isCompact: Bool) -> CGSize {
+        let minimum = isCompact ? compactDefaultSize : minimumSize
+        return CGSize(width: min(max(size.width, minimum.width), maximumSize.width), height: min(max(size.height, minimum.height), maximumSize.height))
+    }
 }

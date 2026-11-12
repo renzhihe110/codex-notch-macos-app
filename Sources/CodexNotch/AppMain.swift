@@ -7,7 +7,8 @@ struct CodexNotchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Settings {
+        // 保留 SwiftUI 生命周期，但不再注册可被系统打开的空设置窗；桌面入口仍由 AppKit 管理。
+        MenuBarExtra("Codex 悬浮助手", isInserted: .constant(false)) {
             EmptyView()
         }
         .commands {
