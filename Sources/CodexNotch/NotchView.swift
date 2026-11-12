@@ -35,7 +35,7 @@ struct NotchView: View {
     let onQuit: () -> Void
     let onToggleMode: () -> Void
     let onTogglePin: () -> Void
-    // 大小窗共用同一窗口，由控制器同步原生尺寸与布局模式。
+    // 原窗口切换大小模式，快捷键详细面板通过回调交还原小窗。
     let onToggleCompactMode: () -> Void
     let onClose: () -> Void
     // 监听共享字体偏好，确保刘海和悬浮面板会即时应用新字体。
@@ -342,10 +342,8 @@ struct NotchView: View {
                     .help(jumpError)
             }
             Spacer(minLength: 0)
-            // 完整面板提供精简入口，原有清未读、图钉、设置和关闭继续保留。
-            if floatingDashboardSettings.allowsCompactMode {
-                floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
-            }
+            // 所有完整面板都提供小窗入口，独立详情由控制器切回原小窗。
+            floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
             // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
             floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
                 .accessibilityLabel("清除所有聊天未读标记")

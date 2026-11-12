@@ -167,12 +167,12 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var centersExpandedPanel = false
     // 悬浮 Dashboard 初始居中后保留当前位置，避免状态刷新覆盖用户拖动。
     private var preservesFloatingDashboardPosition = false
-    // 展开大窗前单独记录小窗坐标，避免大窗居中或拖动后覆盖小窗位置。
-    private var compactFloatingOrigin: CGPoint?
     // 原窗口与快捷键详细窗口分别持有展示状态，仅原窗口可切换小窗模式。
     private let floatingDashboardSettings: FloatingDashboardSettings
     private let isKeyboardDetail: Bool
     private var keyboardDetailWindowController: NotchWindowController?
+    // 独立详情切回原窗口时保留其位置和图钉，弱引用避免控制器循环持有。
+    private weak var originalWindowController: NotchWindowController?
     // 双击窗口足够覆盖自然连按，同时保持单次触发即时响应。
     private static let doubleHotKeyInterval: TimeInterval = 0.4
 
@@ -325,6 +325,20 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) {
         guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else { return }
         floatingDashboardSettings.update(size: window.frame.size)
+        saveCompactWindowPosition()
+    }
+
+    // 拖动后立即保存小窗坐标，重启前不必先切换大小窗。
+    func windowDidMove(_ notification: Notification) {
+        saveCompactWindowPosition()
+    }
+
+    // 仅记录已完成定位的小窗，忽略开窗和模式切换过程中的临时坐标。
+    private func saveCompactWindowPosition() {
+        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, floatingDashboardSettings.isCompact, preservesFloatingDashboardPosition, let window else {
+            return
+        }
+        floatingDashboardSettings.updateCompactOrigin(window.frame.origin)
     }
 
     // 点击面板之外的本应用窗口或其他应用区域时收起面板，补足 accessory 窗口失焦不稳定的场景。
@@ -391,8 +405,27 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         }
         let controller = NotchWindowController(initialState: viewModel.state, hotKeySettings: hotKeySettings, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onDoubleHotKey: onDoubleHotKey, onWillReveal: onWillReveal, isKeyboardDetail: true)
         controller.viewModel.jumpError = viewModel.jumpError
+        controller.originalWindowController = self
         keyboardDetailWindowController = controller
         return controller
+    }
+
+    // 已展开的小窗只恢复焦点，隐藏的小窗按记录重新显示，不把详情的图钉传给它。
+    private func revealCompactWindow() {
+        if !floatingDashboardSettings.isCompact {
+            if viewModel.isExpanded && viewModel.isPresentedFromCapsule {
+                toggleFloatingCompactMode()
+            } else {
+                floatingDashboardSettings.toggleCompactMode()
+            }
+        }
+        if viewModel.isExpanded && viewModel.isPresentedFromCapsule {
+            onWillReveal()
+            NSApp.activate(ignoringOtherApps: true)
+            window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        reveal(anchorFrame: nil, centersInScreen: true, expandedScale: 1, presentsFloatingDashboard: true)
     }
 
     // 隐藏已钉住的原详细窗口时保留其模型和窗口尺寸，下次快捷键原样恢复。
@@ -476,6 +509,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         preservesFloatingDashboardPosition = viewModel.isPresentedFromCapsule
         window?.isMovableByWindowBackground = viewModel.isPresentedFromCapsule
         viewModel.isExpanded = true
+        saveCompactWindowPosition()
         window?.makeKeyAndOrderFront(nil)
     }
 
@@ -487,31 +521,41 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 大窗复用快捷键的居中定位，切回小窗时恢复展开前的位置并保持常驻状态。
     private func toggleFloatingCompactMode() {
-        guard !isKeyboardDetail, viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else {
+        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else {
+            return
+        }
+        // 快捷键详情只负责收起自身，模式、坐标及常驻状态由原窗口继续管理。
+        if isKeyboardDetail {
+            setExpanded(false)
+            originalWindowController?.revealCompactWindow()
             return
         }
         // 原窗口展开成详细模式前关闭独立详细面板，避免出现两个完整面板。
         if floatingDashboardSettings.isCompact {
             keyboardDetailWindowController?.dismissDashboard()
-            compactFloatingOrigin = window.frame.origin
+            saveCompactWindowPosition()
         }
         let previousFrame = window.frame
+        // 切换期间抑制移动回调写入，避免大窗临时坐标覆盖持久化的小窗位置。
+        preservesFloatingDashboardPosition = false
         floatingDashboardSettings.update(size: previousFrame.size)
         floatingDashboardSettings.toggleCompactMode()
         let size = floatingDashboardSettings.size
         setFloatingDashboardResizable(true)
         var origin = CGPoint(x: previousFrame.minX, y: previousFrame.maxY - size.height)
-        // 已记录的小窗坐标直接恢复，首次从大窗切入小窗时沿用左上角及屏幕边缘限制。
+        // 优先恢复小窗记录，首次从大窗切入小窗时沿用左上角及屏幕边缘限制。
         if !floatingDashboardSettings.isCompact {
             origin = NotchWindowMetrics.centeredPanelOrigin(for: size, on: window.screen ?? NSScreen.main)
-        } else if let compactFloatingOrigin {
-            origin = compactFloatingOrigin
+        } else if let compactOrigin = restoredCompactOrigin(for: size, fallbackScreen: window.screen) {
+            origin = compactOrigin
         } else if let screen = window.screen ?? NSScreen.main {
             let visibleFrame = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             origin.x = min(max(origin.x, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - size.width))
             origin.y = min(max(origin.y, visibleFrame.minY), max(visibleFrame.minY, visibleFrame.maxY - size.height))
         }
         window.setFrame(CGRect(origin: origin, size: size), display: true)
+        preservesFloatingDashboardPosition = true
+        saveCompactWindowPosition()
         normalizeSelectedSessionIndex()
     }
 
@@ -633,12 +677,28 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(frame, display: true)
     }
 
-    // 宠物和全局快捷键居中显示；刘海入口继续从顶部锚点向下展开。
+    // 小窗优先恢复持久化位置，完整面板仍居中，刘海入口继续从顶部锚点向下展开。
     private func expandedOrigin(for size: CGSize, on screen: NSScreen?, anchorFrame: CGRect?) -> CGPoint {
+        if viewModel.isPresentedFromCapsule, floatingDashboardSettings.isCompact, let origin = restoredCompactOrigin(for: size, fallbackScreen: screen) {
+            return origin
+        }
         if centersExpandedPanel {
             return NotchWindowMetrics.centeredPanelOrigin(for: size, on: screen)
         }
         return NotchWindowMetrics.panelOrigin(for: size, on: screen, anchorFrame: anchorFrame, includeAnchorArea: keepsCollapsedEntryVisible)
+    }
+
+    // 优先恢复原屏幕坐标；屏幕断开或可见区域改变时，将小窗限制在可见范围内。
+    private func restoredCompactOrigin(for size: CGSize, fallbackScreen: NSScreen?) -> CGPoint? {
+        guard let origin = floatingDashboardSettings.compactOrigin else {
+            return nil
+        }
+        let center = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? fallbackScreen ?? NSScreen.main else {
+            return origin
+        }
+        let visibleFrame = screen.visibleFrame
+        return CGPoint(x: min(max(origin.x, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - size.width)), y: min(max(origin.y, visibleFrame.minY), max(visibleFrame.minY, visibleFrame.maxY - size.height)))
     }
 
     // 同时注册本地按键和系统热键；系统热键失败时，本地快捷键仍可在窗口聚焦时使用。

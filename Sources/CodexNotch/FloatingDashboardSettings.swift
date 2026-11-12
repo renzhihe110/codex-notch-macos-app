@@ -14,6 +14,9 @@ final class FloatingDashboardSettings: ObservableObject {
     private static let compactWidthDefaultsKey = "CodexNotch.floatingDashboard.compactWidth"
     private static let compactHeightDefaultsKey = "CodexNotch.floatingDashboard.compactHeight"
     private static let compactModeDefaultsKey = "CodexNotch.floatingDashboard.isCompact"
+    // 小窗坐标独立持久化，大窗尺寸或位置变化不会覆盖它。
+    private static let compactXDefaultsKey = "CodexNotch.floatingDashboard.compactX"
+    private static let compactYDefaultsKey = "CodexNotch.floatingDashboard.compactY"
     @Published private(set) var size: CGSize
     @Published private(set) var isCompact: Bool
     // 快捷键专用窗口固定使用完整模式，不修改原窗口的小窗偏好。
@@ -32,6 +35,27 @@ final class FloatingDashboardSettings: ObservableObject {
     // 小窗允许缩到设计尺寸，完整面板保持原有的最小窗口限制。
     var currentMinimumSize: CGSize {
         isCompact ? Self.compactDefaultSize : Self.minimumSize
+    }
+
+    // 缺失或无效坐标沿用默认定位，零和负坐标仍支持屏幕边缘及多屏排列。
+    var compactOrigin: CGPoint? {
+        guard let x = defaults.object(forKey: Self.compactXDefaultsKey) as? NSNumber, let y = defaults.object(forKey: Self.compactYDefaultsKey) as? NSNumber else {
+            return nil
+        }
+        let origin = CGPoint(x: x.doubleValue, y: y.doubleValue)
+        guard origin.x.isFinite, origin.y.isFinite else {
+            return nil
+        }
+        return origin
+    }
+
+    // 仅小窗模式保存位置，快捷键详细窗口不得写入小窗坐标。
+    func updateCompactOrigin(_ origin: CGPoint) {
+        guard allowsCompactMode, isCompact, origin.x.isFinite, origin.y.isFinite else {
+            return
+        }
+        defaults.set(origin.x, forKey: Self.compactXDefaultsKey)
+        defaults.set(origin.y, forKey: Self.compactYDefaultsKey)
     }
 
     // 窗口缩放结束后保存限制范围内的尺寸，并通知 SwiftUI 同步布局。
