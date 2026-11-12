@@ -147,6 +147,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private let hotKeySettings: HotKeySettings
     private let onSelectSession: (CodexSession) -> Void
     private let onOpenSettings: () -> Void
+    private let onClearAllUnread: () -> Void
     private let onQuit: () -> Void
     private let onToggleMode: () -> Void
     private let onDoubleHotKey: () -> Void
@@ -166,21 +167,29 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     private var centersExpandedPanel = false
     // 悬浮 Dashboard 初始居中后保留当前位置，避免状态刷新覆盖用户拖动。
     private var preservesFloatingDashboardPosition = false
-    // 保存悬浮 Dashboard 尺寸，供窗口控制器和 SwiftUI 视图共享。
-    private let floatingDashboardSettings = FloatingDashboardSettings.shared
+    // 展开大窗前单独记录小窗坐标，避免大窗居中或拖动后覆盖小窗位置。
+    private var compactFloatingOrigin: CGPoint?
+    // 原窗口与快捷键详细窗口分别持有展示状态，仅原窗口可切换小窗模式。
+    private let floatingDashboardSettings: FloatingDashboardSettings
+    private let isKeyboardDetail: Bool
+    private var keyboardDetailWindowController: NotchWindowController?
     // 双击窗口足够覆盖自然连按，同时保持单次触发即时响应。
     private static let doubleHotKeyInterval: TimeInterval = 0.4
 
-    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onClearAllUnread: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onDoubleHotKey: @escaping () -> Void, onWillReveal: @escaping () -> Void) {
+    init(initialState: NotchState, hotKeySettings: HotKeySettings, onSelectSession: @escaping (CodexSession) -> Void, onOpenSettings: @escaping () -> Void, onClearAllUnread: @escaping () -> Void, onQuit: @escaping () -> Void, onToggleMode: @escaping () -> Void, onDoubleHotKey: @escaping () -> Void, onWillReveal: @escaping () -> Void, isKeyboardDetail: Bool = false) {
         let collapsedSize = NotchWindowMetrics.collapsedSize(for: NSScreen.main)
         self.viewModel = NotchViewModel(state: initialState, collapsedHeight: collapsedSize.height)
         self.hotKeySettings = hotKeySettings
         self.onSelectSession = onSelectSession
         self.onOpenSettings = onOpenSettings
+        self.onClearAllUnread = onClearAllUnread
         self.onQuit = onQuit
         self.onToggleMode = onToggleMode
         self.onDoubleHotKey = onDoubleHotKey
         self.onWillReveal = onWillReveal
+        self.isKeyboardDetail = isKeyboardDetail
+        self.floatingDashboardSettings = isKeyboardDetail ? FloatingDashboardSettings(allowsCompactMode: false) : .shared
+        self.keepsCollapsedEntryVisible = !isKeyboardDetail
         let window = KeyableBorderlessWindow(contentRect: CGRect(origin: .zero, size: collapsedSize), styleMask: [.borderless], backing: .buffered, defer: false)
         super.init(window: window)
         window.onLeftMouseDown = { [weak self] event in self?.handleLeftMouseDown(event) ?? false }
@@ -195,7 +204,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         window.isMovableByWindowBackground = false
         window.acceptsMouseMovedEvents = true
         // 将清除未读操作交给应用层，窗口不直接修改 Codex 状态。
-        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
+        let hostingView = NotchHostingView(rootView: NotchView(model: viewModel, floatingDashboardSettings: floatingDashboardSettings, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onTogglePin: { [weak self] in
             self?.toggleFloatingPanelPin()
         }, onToggleCompactMode: { [weak self] in
             self?.toggleFloatingCompactMode()
@@ -242,6 +251,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 外部轮询刷新只替换展示状态，不改变当前展开/收起状态。
     func update(state: NotchState) {
         viewModel.state = state
+        keyboardDetailWindowController?.update(state: state)
         normalizeSelectedSessionIndex()
         // 展开时会话数量会影响面板高度，数据刷新后同步调整窗口 frame。
         if viewModel.isExpanded {
@@ -251,6 +261,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 刘海居中模式显示收起态入口，并让面板关闭后回到收起态。
     func showCollapsed() {
+        keyboardDetailWindowController?.dismissDashboard()
         keepsCollapsedEntryVisible = true
         activeEntryAnchorFrame = nil
         presentationScreen = nil
@@ -267,6 +278,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 胶囊模式隐藏刘海入口，并让胶囊打开的面板关闭后直接消失。
     func hideEntry() {
+        keyboardDetailWindowController?.dismissDashboard()
         keepsCollapsedEntryVisible = false
         activeEntryAnchorFrame = nil
         presentationScreen = nil
@@ -282,6 +294,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 展示跳转失败信息，保留用户当前展开状态。
     func showJumpError(_ message: String) {
         viewModel.jumpError = message
+        keyboardDetailWindowController?.showJumpError(message)
         // 错误提示会占用一行高度，展开态立即重算窗口尺寸。
         if viewModel.isExpanded {
             positionWindow(isExpanded: true, anchorFrame: activeEntryAnchorFrame)
@@ -291,6 +304,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 清理上一条跳转错误，避免成功后继续误导用户。
     func clearJumpError() {
         viewModel.jumpError = nil
+        keyboardDetailWindowController?.clearJumpError()
         // 错误行消失后把面板收回到内容实际高度。
         if viewModel.isExpanded {
             positionWindow(isExpanded: true, anchorFrame: activeEntryAnchorFrame)
@@ -301,7 +315,9 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         guard !viewModel.isPinned else { return }
         // 点击宠物时先保留面板，随后由宠物的 mouseUp 执行显式 toggle。
-        guard !isMouseInsidePanelOrEntry() else { return }
+        guard !isMouseInsideEntry() else {
+            return
+        }
         setExpanded(false)
     }
 
@@ -328,22 +344,69 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 外部点击只在展开态生效；面板自身点击继续交给 SwiftUI 行、按钮和右键菜单处理。
     private func collapseExpandedPanelAfterOutsideClick(eventWindow: NSWindow?) {
         guard viewModel.isExpanded, !viewModel.isPinned else { return }
-        guard eventWindow !== window, eventWindow !== externalEntryWindow else { return }
+        guard eventWindow !== window else {
+            return
+        }
+        // 全局点击没有 eventWindow；无宠物入口的独立详情不能将 nil/nil 当作点击入口。
+        if let externalEntryWindow, eventWindow === externalEntryWindow {
+            return
+        }
         setExpanded(false)
     }
 
-    // 全局快捷键始终打开正常尺寸的悬浮 Dashboard，关闭后仍回到原入口模式。
-    func revealForKeyboard() {
+    // 独立快捷键窗口始终读取完整面板尺寸，不改变原窗口的模式与尺寸。
+    private func revealForKeyboard() {
+        floatingDashboardSettings.reloadSize()
         reveal(anchorFrame: nil, centersInScreen: true, expandedScale: 1, presentsFloatingDashboard: true)
     }
 
-    // 全局快捷键使用显式 toggle：已展开时收起，未展开时再按原逻辑弹出。
+    // 原窗口已展开时直接复用，否则只切换独立详细窗口，已钉住的小窗保持原样。
     func toggleForKeyboard() {
+        if !isKeyboardDetail {
+            if isDetailedEntryExpanded {
+                keyboardDetailWindowController?.dismissDashboard()
+                if window?.isVisible == true {
+                    hideDetailedEntryForKeyboard()
+                } else {
+                    onWillReveal()
+                    NSApp.activate(ignoringOtherApps: true)
+                    window?.makeKeyAndOrderFront(nil)
+                }
+            } else {
+                detailedControllerForKeyboard().toggleForKeyboard()
+            }
+            return
+        }
         guard viewModel.isExpanded else {
             revealForKeyboard()
             return
         }
         setExpanded(false)
+    }
+
+    // 延迟创建第二个原生窗口，复用完整 UI 与数据回调，但不重复注册全局快捷键。
+    private func detailedControllerForKeyboard() -> NotchWindowController {
+        if let controller = keyboardDetailWindowController {
+            return controller
+        }
+        let controller = NotchWindowController(initialState: viewModel.state, hotKeySettings: hotKeySettings, onSelectSession: onSelectSession, onOpenSettings: onOpenSettings, onClearAllUnread: onClearAllUnread, onQuit: onQuit, onToggleMode: onToggleMode, onDoubleHotKey: onDoubleHotKey, onWillReveal: onWillReveal, isKeyboardDetail: true)
+        controller.viewModel.jumpError = viewModel.jumpError
+        keyboardDetailWindowController = controller
+        return controller
+    }
+
+    // 隐藏已钉住的原详细窗口时保留其模型和窗口尺寸，下次快捷键原样恢复。
+    private func hideDetailedEntryForKeyboard() {
+        if viewModel.isPinned {
+            window?.orderOut(nil)
+        } else {
+            setExpanded(false)
+        }
+    }
+
+    // 隐藏但保留图钉的原窗口仍处于详细模式，必须继续复用，不能另开窗口。
+    private var isDetailedEntryExpanded: Bool {
+        !isKeyboardDetail && viewModel.isExpanded && viewModel.isPresentedFromCapsule && !floatingDashboardSettings.isCompact
     }
 
     // 第一次触发立即切换 Codex；400ms 内第二次触发改为切换 Xcode，并结束本轮双击识别。
@@ -358,10 +421,19 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         toggleForKeyboard()
     }
 
-    // Xcode Dashboard 打开前只收起 Codex 展开面板，保留当前刘海或宠物入口模式。
+    // IDE 和设置入口只收起详细面板；已钉住的小窗不动，原详细窗口隐藏时保留图钉。
     func dismissDashboard() {
-        guard viewModel.isExpanded else { return }
-        setExpanded(false)
+        keyboardDetailWindowController?.dismissDashboard()
+        guard viewModel.isExpanded else {
+            return
+        }
+        if isKeyboardDetail {
+            setExpanded(false)
+        } else if isDetailedEntryExpanded {
+            hideDetailedEntryForKeyboard()
+        } else if !viewModel.isPinned {
+            setExpanded(false)
+        }
     }
 
     // 记录宠物窗口，仅用于外部点击排除，不参与 Dashboard 定位。
@@ -372,7 +444,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
     // 宠物单击显式切换正常尺寸 Dashboard，并在宠物所在屏幕居中显示。
     func toggleFromStatusItem(entryFrame: CGRect) {
         keepsCollapsedEntryVisible = false
-        if viewModel.isExpanded, viewModel.isPresentedFromCapsule {
+        if viewModel.isExpanded, viewModel.isPresentedFromCapsule, window?.isVisible == true {
             setExpanded(false)
             return
         }
@@ -394,6 +466,10 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         normalizeSelectedSessionIndex()
         NSApp.activate(ignoringOtherApps: true)
         viewModel.isPresentedFromCapsule = presentsFloatingDashboard || !keepsCollapsedEntryVisible
+        // 宠物重新打开原详细面板时也复用原窗口，避免与快捷键详细窗口同时显示。
+        if !isKeyboardDetail && viewModel.isPresentedFromCapsule && !floatingDashboardSettings.isCompact {
+            keyboardDetailWindowController?.dismissDashboard()
+        }
         setFloatingDashboardResizable(viewModel.isPresentedFromCapsule)
         preservesFloatingDashboardPosition = false
         positionWindow(isExpanded: true, anchorFrame: anchorFrame)
@@ -409,10 +485,15 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         viewModel.isPinned.toggle()
     }
 
-    // 大小窗原地切换并保持左上角和常驻状态，恢复大窗时将边缘夹回当前屏幕。
+    // 大窗复用快捷键的居中定位，切回小窗时恢复展开前的位置并保持常驻状态。
     private func toggleFloatingCompactMode() {
-        guard viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else {
+        guard !isKeyboardDetail, viewModel.isExpanded, viewModel.isPresentedFromCapsule, let window else {
             return
+        }
+        // 原窗口展开成详细模式前关闭独立详细面板，避免出现两个完整面板。
+        if floatingDashboardSettings.isCompact {
+            keyboardDetailWindowController?.dismissDashboard()
+            compactFloatingOrigin = window.frame.origin
         }
         let previousFrame = window.frame
         floatingDashboardSettings.update(size: previousFrame.size)
@@ -420,7 +501,12 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         let size = floatingDashboardSettings.size
         setFloatingDashboardResizable(true)
         var origin = CGPoint(x: previousFrame.minX, y: previousFrame.maxY - size.height)
-        if let screen = window.screen ?? NSScreen.main {
+        // 已记录的小窗坐标直接恢复，首次从大窗切入小窗时沿用左上角及屏幕边缘限制。
+        if !floatingDashboardSettings.isCompact {
+            origin = NotchWindowMetrics.centeredPanelOrigin(for: size, on: window.screen ?? NSScreen.main)
+        } else if let compactFloatingOrigin {
+            origin = compactFloatingOrigin
+        } else if let screen = window.screen ?? NSScreen.main {
             let visibleFrame = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             origin.x = min(max(origin.x, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - size.width))
             origin.y = min(max(origin.y, visibleFrame.minY), max(visibleFrame.minY, visibleFrame.maxY - size.height))
@@ -442,13 +528,12 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    private func isMouseInsidePanelOrEntry() -> Bool {
-        guard let window else { return false }
-        let mouseLocation = NSEvent.mouseLocation
-        if window.frame.insetBy(dx: -2, dy: -2).contains(mouseLocation) {
-            return true
+    // 仅宠物点击需要等待 mouseUp；点击任务跳走时即使鼠标仍在面板内也应正常失焦收起。
+    private func isMouseInsideEntry() -> Bool {
+        guard let externalEntryWindow else {
+            return false
         }
-        return externalEntryWindow?.frame.insetBy(dx: -2, dy: -2).contains(mouseLocation) == true
+        return externalEntryWindow.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
     }
 
     private func setExpanded(_ isExpanded: Bool) {
@@ -562,6 +647,10 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return event }
             return self.handleKeyDown(event) ? nil : event
         }
+        // 独立详细窗口仅接管自己的方向键、回车和 Escape，热键仍由原控制器统一分发。
+        guard !isKeyboardDetail else {
+            return
+        }
         hotKeySettingsObserver = NotificationCenter.default.addObserver(forName: HotKeySettings.changedNotification, object: hotKeySettings, queue: .main) { [weak self] _ in
             self?.reloadGlobalHotKey()
         }
@@ -633,7 +722,7 @@ final class NotchWindowController: NSWindowController, NSWindowDelegate {
 
     // 展开面板时接管方向键、回车和 Escape，其他按键继续交给系统处理。
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        if hotKeySettings.matches(event) {
+        if !isKeyboardDetail && hotKeySettings.matches(event) {
             handleHotKeyTrigger()
             return true
         }

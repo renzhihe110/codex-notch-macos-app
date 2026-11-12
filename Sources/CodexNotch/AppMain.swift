@@ -78,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.xcodeDashboardWindowController?.hide()
         })
         notchWindowController = controller
-        // Xcode Dashboard 由统一快捷键的双击分支唤醒，打开前只负责收起当前 Codex 展开面板。
+        // 双击打开 IDE 时仅收起 Codex 详细面板，已钉住的小窗继续显示。
         xcodeDashboardWindowController = XcodeDashboardWindowController(onWillReveal: { [weak self] in
             self?.notchWindowController?.dismissDashboard()
         }, onOpenSettings: { [weak self] in

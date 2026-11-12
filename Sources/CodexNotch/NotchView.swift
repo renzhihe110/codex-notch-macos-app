@@ -26,6 +26,8 @@ final class NotchViewModel: ObservableObject {
 // 展示桌面顶部刘海和展开后的多会话列表。
 struct NotchView: View {
     @ObservedObject var model: NotchViewModel
+    // 由窗口注入展示偏好，独立详细面板不会跟随原窗口切换成小窗。
+    @ObservedObject var floatingDashboardSettings: FloatingDashboardSettings
     let onSelectSession: (CodexSession) -> Void
     let onOpenSettings: () -> Void
     // 通过 Codex 官方操作统一清除全部聊天的未读标记。
@@ -40,8 +42,6 @@ struct NotchView: View {
     @ObservedObject private var fontSettings = FontSettings.shared
     // 监听项目目录颜色偏好，用户选色后立即刷新悬浮任务行。
     @ObservedObject private var directoryColorSettings = DirectoryColorSettings.shared
-    // 监听悬浮面板尺寸偏好，窗口缩放时让 SwiftUI 内容立即跟随新尺寸。
-    @ObservedObject private var floatingDashboardSettings = FloatingDashboardSettings.shared
     // 监听运行态粒子偏好，设置页切换后立即刷新可见任务卡。
     @ObservedObject private var particleEffectSettings = ParticleEffectSettings.shared
     // 监听 Codex 官方待查看状态，主窗口查看任务后自动恢复绿色已完成胶囊。
@@ -343,7 +343,9 @@ struct NotchView: View {
             }
             Spacer(minLength: 0)
             // 完整面板提供精简入口，原有清未读、图钉、设置和关闭继续保留。
-            floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
+            if floatingDashboardSettings.allowsCompactMode {
+                floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
+            }
             // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
             floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
                 .accessibilityLabel("清除所有聊天未读标记")

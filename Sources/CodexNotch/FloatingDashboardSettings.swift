@@ -16,12 +16,15 @@ final class FloatingDashboardSettings: ObservableObject {
     private static let compactModeDefaultsKey = "CodexNotch.floatingDashboard.isCompact"
     @Published private(set) var size: CGSize
     @Published private(set) var isCompact: Bool
+    // 快捷键专用窗口固定使用完整模式，不修改原窗口的小窗偏好。
+    let allowsCompactMode: Bool
     private let defaults: UserDefaults
 
     // 原有尺寸键继续供完整面板使用，未选择小窗的用户保持现有布局。
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, allowsCompactMode: Bool = true) {
         self.defaults = defaults
-        let isCompact = defaults.bool(forKey: Self.compactModeDefaultsKey)
+        self.allowsCompactMode = allowsCompactMode
+        let isCompact = allowsCompactMode && defaults.bool(forKey: Self.compactModeDefaultsKey)
         self.isCompact = isCompact
         self.size = Self.loadSize(from: defaults, isCompact: isCompact)
     }
@@ -44,8 +47,16 @@ final class FloatingDashboardSettings: ObservableObject {
 
     // 切换时加载另一种模式的尺寸，不覆盖用户已经保存的完整面板大小。
     func toggleCompactMode() {
+        guard allowsCompactMode else {
+            return
+        }
         isCompact.toggle()
         defaults.set(isCompact, forKey: Self.compactModeDefaultsKey)
+        size = Self.loadSize(from: defaults, isCompact: isCompact)
+    }
+
+    // 独立详细窗口再次打开时读取最新完整尺寸，不改变另一窗口的布局或当前尺寸。
+    func reloadSize() {
         size = Self.loadSize(from: defaults, isCompact: isCompact)
     }
 
