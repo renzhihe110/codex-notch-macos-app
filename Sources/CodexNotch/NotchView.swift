@@ -229,23 +229,19 @@ struct NotchView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 192, alignment: .leading)
-                    HStack(spacing: 4) {
-                        Text(session.cwdHint)
-                            .font(fontSettings.font(size: 12, weight: .medium))
-                            .foregroundStyle(directoryColorSettings.color)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .layoutPriority(-1)
-                            .help(session.cwd)
-                        if let threadKind = session.threadKind {
-                            Text("·")
-                                .foregroundStyle(.white.opacity(0.40))
-                            SessionThreadKindBadge(kind: threadKind, scale: 1, isCompact: true)
-                                .font(fontSettings.font(size: 11, weight: .medium))
-                        }
-                    }
+                    Text(session.cwdHint)
+                        .font(fontSettings.font(size: 12, weight: .medium))
+                        .foregroundStyle(directoryColorSettings.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(session.cwd)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // 线程类型紧靠状态左侧，两者靠右排列，不随项目目录长度移动。
+                if let threadKind = session.threadKind {
+                    SessionThreadKindBadge(kind: threadKind, scale: 1, isCompact: true)
+                        .font(fontSettings.font(size: 11, weight: .medium))
+                }
                 Text(compactFloatingStatusText(session))
                     .font(fontSettings.font(size: 13, weight: .medium))
                     .foregroundStyle(floatingStatusForeground(session))
