@@ -47,6 +47,9 @@ struct NotchView: View {
     // 监听 Codex 官方待查看状态，主窗口查看任务后自动恢复绿色已完成胶囊。
     @ObservedObject private var completionReadStore = CompletionReadStore.shared
     @State private var collapsedCarouselIndex = 0
+    // 大小窗各自记录悬浮按钮，统一热区尺寸同时用于标题栏高度，避免命中区域被裁切。
+    @State private var hoveredFloatingHeaderButton: String?
+    private let floatingHeaderHitSize: CGFloat = 40
     // 展开态布局常量放在 NotchWindowMetrics，确保视图和窗口按同一尺寸模型收缩。
     // 收起态轮播红黄灯会话，避免多个任务时只看到最新一条。
     private let collapsedCarouselTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
@@ -132,13 +135,18 @@ struct NotchView: View {
     private var compactFloatingCard: some View {
         VStack(spacing: 0) {
             compactFloatingHeader
-                .frame(height: 32)
+                .frame(height: floatingHeaderHitSize)
+                // 左侧与任务卡外边框对齐，右侧按钮继续保留原有间距。
+                .padding(.leading, 6)
+                .padding(.trailing, 8)
             Rectangle()
                 .fill(Color.white.opacity(0.12))
                 .frame(height: 1)
+                .padding(.horizontal, 8)
+            // 任务卡左右外侧各留 6pt，与卡片行间距一致，边框不再紧贴窗口。
             compactFloatingTaskList
+                .padding(.horizontal, 6)
         }
-        .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 6)
         .frame(width: floatingDashboardSettings.size.width, height: floatingDashboardSettings.size.height)
@@ -150,10 +158,12 @@ struct NotchView: View {
     // 小窗只显示恢复、图钉和关闭按钮，设置继续通过原有右键菜单打开。
     private var compactFloatingHeader: some View {
         HStack(spacing: 5) {
+            // 标识按自然宽度布局，避免宽图标在固定 20pt 容器内向左溢出。
             floatingAssistantIcon
                 .font(fontSettings.font(size: 18, weight: .semibold))
                 .foregroundStyle(Color(red: 0.20, green: 0.78, blue: 1.0))
-                .frame(width: 20, height: 20)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(height: 20, alignment: .leading)
             Text("Codex 悬浮助手")
                 .font(fontSettings.font(size: 14, weight: .semibold))
                 .lineLimit(1)
@@ -164,9 +174,12 @@ struct NotchView: View {
                     .help(error)
             }
             Spacer(minLength: 0)
-            floatingHeaderButton(systemName: "arrow.up.left.and.arrow.down.right", help: "恢复完整窗口", size: 22, action: onToggleCompactMode)
-            floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, size: 22, action: onTogglePin)
-            floatingHeaderButton(systemName: "xmark", help: "关闭面板", size: 22, action: onClose)
+            // 放大热区后移除工具按钮间的额外空隙，保留小窗标题空间。
+            HStack(spacing: 0) {
+                floatingHeaderButton(systemName: "arrow.up.left.and.arrow.down.right", help: "恢复完整窗口", size: 22, action: onToggleCompactMode)
+                floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, size: 22, action: onTogglePin)
+                floatingHeaderButton(systemName: "xmark", help: "关闭面板", size: 22, action: onClose)
+            }
         }
     }
 
@@ -181,7 +194,8 @@ struct NotchView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        // 与主窗口保持相同的卡片间距，避免相邻圆角边框连在一起。
+                        LazyVStack(spacing: 6) {
                             ForEach(floatingVisibleSessions) { session in
                                 compactFloatingTaskRow(session)
                                     .id(session.id)
@@ -214,6 +228,7 @@ struct NotchView: View {
     // 使用整数大字号和更清晰的字重；标题仍限制为约十二个 16pt 中文字宽。
     private func compactFloatingTaskRow(_ session: CodexSession) -> some View {
         let isSelected = model.state.sessions.indices.contains(model.selectedSessionIndex) && model.state.sessions[model.selectedSessionIndex].id == session.id
+        let isRunning = isFloatingTaskRunning(session)
         return Button {
             onSelectSession(session)
         } label: {
@@ -250,20 +265,18 @@ struct NotchView: View {
                     .background(Capsule().fill(floatingStatusBackground(session)))
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, 4)
+            // 10pt 用于卡片内部内容，背景和边框按卡片外缘绘制。
+            .padding(.horizontal, 10)
             .frame(height: 44)
             .background(ZStack {
-                isFloatingTaskRunning(session) ? floatingTaskStatusBackground(session).opacity(0.45) : Color.white.opacity(isSelected ? 0.04 : 0)
+                isRunning ? floatingTaskStatusBackground(session).opacity(0.45) : Color.white.opacity(isSelected ? 0.04 : 0)
                 // 复用完整面板的运行态粒子与效果偏好，动画只绘制在当前行文字下方。
-                if isFloatingTaskRunning(session) {
+                if isRunning {
                     RunningTaskParticleBackground(effect: particleEffectSettings.effect)
                 }
-            }.clipped())
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.12))
-                    .frame(height: 1)
-            }
+            }.clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous)))
+            // 沿用主窗口的圆角、颜色和线宽，内描边避免小窗边缘裁掉半条边框。
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(isRunning ? Color(red: 0.941, green: 0.725, blue: 0.325).opacity(0.82) : Color(red: 0.165, green: 0.188, blue: 0.216), lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -304,7 +317,7 @@ struct NotchView: View {
     private var floatingCard: some View {
         VStack(spacing: 10) {
             floatingHeader
-                .frame(height: 30)
+                .frame(height: floatingHeaderHitSize)
             floatingTaskList
                 .frame(height: floatingTaskListHeight)
             tokenSummaryFooter
@@ -338,14 +351,17 @@ struct NotchView: View {
                     .help(jumpError)
             }
             Spacer(minLength: 0)
-            // 所有完整面板都提供小窗入口，独立详情由控制器切回原小窗。
-            floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
-            // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
-            floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
-                .accessibilityLabel("清除所有聊天未读标记")
-            floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, action: onTogglePin)
-            floatingHeaderButton(systemName: "gearshape", help: "打开设置", action: onOpenSettings)
-            floatingHeaderButton(systemName: "xmark", help: "关闭面板", action: onClose)
+            // 相邻热区独立排列，省去额外空隙以容纳完整面板的五个工具按钮。
+            HStack(spacing: 0) {
+                // 所有完整面板都提供小窗入口，独立详情由控制器切回原小窗。
+                floatingHeaderButton(systemName: "arrow.down.right.and.arrow.up.left", help: "切换到精简小窗", action: onToggleCompactMode)
+                // 与右侧工具按钮保持一致，提示清除范围和对应的官方快捷键。
+                floatingHeaderButton(systemName: "checkmark.bubble", help: "清除所有聊天未读标记（⇧ Esc）", action: onClearAllUnread)
+                    .accessibilityLabel("清除所有聊天未读标记")
+                floatingHeaderButton(systemName: model.isPinned ? "pin.fill" : "pin", help: model.isPinned ? "取消常驻" : "常驻面板", isActive: model.isPinned, action: onTogglePin)
+                floatingHeaderButton(systemName: "gearshape", help: "打开设置", action: onOpenSettings)
+                floatingHeaderButton(systemName: "xmark", help: "关闭面板", action: onClose)
+            }
         }
         .padding(.horizontal, 4)
     }
@@ -359,16 +375,31 @@ struct NotchView: View {
         }
     }
 
-    // 两种标题栏复用按钮行为，小窗按比例收紧图标与点击区域。
+    // 两种标题栏保留各自图标尺寸，共用 40pt 热区及悬浮反馈。
     private func floatingHeaderButton(systemName: String, help: String, isActive: Bool = false, size: CGFloat = 26, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // 图钉选中时图标名称会变化，使用稳定标识避免悬浮高亮中断。
+        let buttonID = systemName == "pin.fill" ? "pin" : systemName
+        let isHovered = hoveredFloatingHeaderButton == buttonID
+        return Button(action: action) {
             Image(systemName: systemName)
                 .font(fontSettings.font(size: 13 * size / 26, weight: .semibold))
-                .foregroundStyle(isActive ? Color(red: 0.44, green: 0.76, blue: 1.0) : .white.opacity(0.66))
+                .foregroundStyle(isActive ? Color(red: 0.44, green: 0.76, blue: 1.0) : .white.opacity(isHovered ? 1 : 0.66))
                 .frame(width: size, height: size)
                 .background(Circle().fill(isActive ? Color(red: 0.08, green: 0.28, blue: 0.68).opacity(0.70) : Color.clear))
+                // 底色和命中范围覆盖同一热区，移入时明确提示可点击范围。
+                .frame(width: max(floatingHeaderHitSize, size), height: max(floatingHeaderHitSize, size))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(isHovered ? 0.12 : 0)))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredFloatingHeaderButton = buttonID
+            } else if hoveredFloatingHeaderButton == buttonID {
+                hoveredFloatingHeaderButton = nil
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
         .help(help)
         .accessibilityLabel(help)
     }
@@ -426,8 +457,8 @@ struct NotchView: View {
         Array(model.state.sessions.prefix(15))
     }
 
-    // 固定的标题栏、底部摘要、间距和内边距共占 102pt，其余高度都交给可滚动任务区。
-    private var floatingTaskListHeight: CGFloat { max(0, floatingDashboardSettings.size.height - 102) }
+    // 扣除顶部 14pt、标题栏、底部摘要 38pt 和两段 10pt 间距，剩余高度交给任务区。
+    private var floatingTaskListHeight: CGFloat { max(0, floatingDashboardSettings.size.height - (14 + floatingHeaderHitSize + 38 + 2 * 10)) }
 
     private func floatingTaskRow(_ session: CodexSession) -> some View {
         Button {
