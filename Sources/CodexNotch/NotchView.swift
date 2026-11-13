@@ -335,10 +335,12 @@ struct NotchView: View {
     // 标题栏提供真实的常驻、设置和关闭行为，并显示图钉选中态。
     private var floatingHeader: some View {
         HStack(spacing: 9) {
+            // 与小窗一致，标识按自然宽度布局，避免固定宽度让图标伸出左侧对齐线。
             floatingAssistantIcon
                 .font(fontSettings.font(size: 18, weight: .semibold))
                 .foregroundStyle(LinearGradient(colors: [.white, Color(red: 0.20, green: 0.78, blue: 1.0)], startPoint: .top, endPoint: .bottom))
-                .frame(width: 24, height: 24)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(height: 24, alignment: .leading)
             Text("Codex 悬浮助手")
                 .font(fontSettings.font(size: 16, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.95))
@@ -363,7 +365,9 @@ struct NotchView: View {
                 floatingHeaderButton(systemName: "xmark", help: "关闭面板", action: onClose)
             }
         }
-        .padding(.horizontal, 4)
+        // 左侧复用任务列表的 6pt 内边距，右侧按钮继续保留原有间距。
+        .padding(.leading, 6)
+        .padding(.trailing, 4)
     }
 
     // visionpro 在新系统上更接近参考标识，macOS 13 保留可见的 CPU 回退。
