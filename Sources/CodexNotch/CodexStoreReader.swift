@@ -245,6 +245,17 @@ final class CodexStoreReader {
         let cwdExpr = nullableColumn("cwd", columns: columns)
         // 侧边栏会话通过父线程 ID 关联主线程，旧数据库缺少该列时返回 NULL。
         let attachedThreadParentIDExpr = nullableColumn("attached_thread_parent_id", columns: columns)
+        // 从完整线程表追溯最上层主线程，UNION 去重以避免异常关联循环。
+        let attachedMainThreadIDExpr = columns.contains("attached_thread_parent_id") ? """
+            (
+                WITH RECURSIVE parents(id, parent_id) AS (
+                    SELECT id, NULLIF(TRIM(attached_thread_parent_id), '') FROM threads WHERE id = TRIM(session.attached_thread_parent_id)
+                    UNION
+                    SELECT thread.id, NULLIF(TRIM(thread.attached_thread_parent_id), '') FROM threads AS thread JOIN parents ON thread.id = parents.parent_id
+                )
+                SELECT id FROM parents WHERE parent_id IS NULL
+            )
+            """ : "NULL"
         // 创建与活动时间分别读取，可见列表在截断前按最后活动时间排序。
         let createdExpr = threadTimestampExpression(baseName: "created_at", columns: columns)
         let updatedExpr = threadTimestampExpression(baseName: "updated_at", columns: columns)
@@ -254,7 +265,7 @@ final class CodexStoreReader {
         if columns.contains("thread_source") { sessionFilters.append("COALESCE(thread_source, '') != 'subagent'") }
         if columns.contains("source") { sessionFilters.append("COALESCE(source, '') NOT LIKE '%subagent%'") }
         let sessionFilter = sessionFilters.isEmpty ? "" : "WHERE \(sessionFilters.joined(separator: " AND "))"
-        let sql = "SELECT id, \(nameExpr), \(titleExpr), \(cwdExpr), \(createdExpr), \(updatedExpr), \(rolloutPathExpr), \(attachedThreadParentIDExpr) FROM threads \(sessionFilter) ORDER BY \(updatedExpr) DESC, id DESC LIMIT ?"
+        let sql = "SELECT id, \(nameExpr), \(titleExpr), \(cwdExpr), \(createdExpr), \(updatedExpr), \(rolloutPathExpr), \(attachedThreadParentIDExpr), \(attachedMainThreadIDExpr) FROM threads AS session \(sessionFilter) ORDER BY \(updatedExpr) DESC, id DESC LIMIT ?"
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -282,7 +293,7 @@ final class CodexStoreReader {
                 } else {
                     threadKind = nil
                 }
-                sessions.append(CodexSession(id: id, name: cleanedName.isEmpty ? nil : cleanedName, threadKind: threadKind, title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
+                sessions.append(CodexSession(id: id, name: cleanedName.isEmpty ? nil : cleanedName, threadKind: threadKind, attachedMainThreadID: sqliteText(statement, index: 8), title: title, cwd: cwd, createdAt: createdAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
             }
             stepResult = sqlite3_step(statement)
         }
@@ -469,7 +480,7 @@ final class CodexStoreReader {
             let title = preferredTitle(title: object["thread_name"] as? String, cwd: cwd, fallback: id)
             let updatedAt = isoDate((object["updated_at"] as? String) ?? "") ?? Date(timeIntervalSince1970: 0)
             let summary = includeDetails ? sessionTailSummary(threadID: id, rolloutPath: nil, errors: &errors) : SessionEventSummary()
-            sessions.append(CodexSession(id: id, name: nil, threadKind: nil, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
+            sessions.append(CodexSession(id: id, name: nil, threadKind: nil, attachedMainThreadID: nil, title: title, cwd: cwd, createdAt: updatedAt, updatedAt: updatedAt, lastEvent: summary.lastEvent, errorHint: summary.errorHint, latestMessage: summary.latestMessage, completionEventAt: summary.completionEventAt, lifecycle: summary.lifecycle, lastActivityAt: summary.lastActivityAt, status: .yellow, attention: nil))
         }
         if sessions.isEmpty {
             errors.append("session_index.jsonl 未读取到可用会话")

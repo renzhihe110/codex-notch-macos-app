@@ -47,6 +47,8 @@ struct CodexSession: Identifiable, Equatable {
     let name: String?
     // 缺少附属关系字段时保持未知，不把旧数据库或索引兜底误标为主线程。
     let threadKind: SessionThreadKind?
+    // 侧边聊天所属的最上层主线程 ID，关联无法解析时为空。
+    let attachedMainThreadID: String?
     let title: String
     let cwd: String
     // 创建时间保留原始元数据，最后活动时间用于可见任务排序、文案和状态判断。

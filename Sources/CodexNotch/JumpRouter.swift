@@ -58,23 +58,19 @@ final class JumpRouter {
         }
     }
 
-    // 构造 Codex App 已支持的 thread 深链，会被官方 App 映射到 /local/<thread-id>。
-    func codexDeepLinkURL(for session: CodexSession) -> URL? {
-        codexThreadDeepLinkURL(threadID: session.id)
-    }
-
-    // 尝试跳转到指定会话；优先用 Codex App 深链，失败时才打开 Terminal resume。
+    // 侧边聊天跳转到所属主线程，关联未知时使用当前会话 ID；深链与终端兜底使用同一目标。
     func jump(to session: CodexSession, completion: @escaping (Result<Void, JumpRouterError>) -> Void) {
-        if openThreadDeepLink(for: session) {
+        let threadID = session.attachedMainThreadID ?? session.id
+        if openThreadDeepLink(threadID: threadID) {
             activateCodexAppSoon(completion: completion)
             return
         }
         openInstalledCodexApp { [weak self] didOpen in
             guard let self else { return }
-            if didOpen, self.openThreadDeepLink(for: session) {
+            if didOpen, self.openThreadDeepLink(threadID: threadID) {
                 self.activateCodexAppSoon(completion: completion)
             } else {
-                self.resumeWithVisibleTerminal(threadID: session.id, completion: completion)
+                self.resumeWithVisibleTerminal(threadID: threadID, completion: completion)
             }
         }
     }
@@ -92,8 +88,8 @@ final class JumpRouter {
     }
 
     // 打开 thread 深链，把会话选择交给 Codex App 自己的 deep link handler。
-    private func openThreadDeepLink(for session: CodexSession) -> Bool {
-        guard let url = codexDeepLinkURL(for: session) else { return false }
+    private func openThreadDeepLink(threadID: String) -> Bool {
+        guard let url = codexThreadDeepLinkURL(threadID: threadID) else { return false }
         return workspace.open(url)
     }
 
